@@ -1,0 +1,343 @@
+name: Dependency Update
+
+on:
+  schedule:
+    # 每周一早上8点运行
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  # 更新Python依赖
+  update-python-deps:
+    name: Update Python Dependencies
+    runs-on: ubuntu-latest
+    if: hashFiles('backend/pyproject.toml') != ''
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Update dependencies
+        run: |
+          cd backend
+          
+          # 备份当前的锁文件
+          cp uv.lock uv.lock.backup || echo "No lock file to backup"
+          
+          # 更新依赖
+          uv sync --upgrade
+          
+          # 检查是否有变化
+          if ! cmp -s uv.lock uv.lock.backup 2>/dev/null; then
+            echo "Dependencies updated"
+            echo "DEPS_UPDATED=true" >> $GITHUB_ENV
+          else
+            echo "No dependency updates available"
+            echo "DEPS_UPDATED=false" >> $GITHUB_ENV
+          fi
+
+      - name: Run tests
+        if: env.DEPS_UPDATED == 'true'
+        run: |
+          cd backend
+          uv run pytest tests/ -v
+
+      - name: Create Pull Request
+        if: env.DEPS_UPDATED == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(deps): update Python dependencies"
+          title: "🔄 Update Python Dependencies"
+          body: |
+            ## Python Dependencies Update
+            
+            This PR updates Python dependencies to their latest versions.
+            
+            ### Changes
+            - Updated dependencies in `backend/pyproject.toml`
+            - All tests are passing ✅
+            
+            ### Review Checklist
+            - [ ] Check for breaking changes in updated packages
+            - [ ] Verify all tests pass
+            - [ ] Review security advisories for updated packages
+            
+            ---
+            *This PR was automatically created by the dependency update workflow.*
+          branch: chore/update-python-deps
+          delete-branch: true
+
+  # 更新Node.js依赖
+  update-node-deps:
+    name: Update Node.js Dependencies
+    runs-on: ubuntu-latest
+    if: hashFiles('frontend/package.json') != ''
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Update dependencies
+        run: |
+          cd frontend
+          
+          # 备份当前的锁文件
+          cp package-lock.json package-lock.json.backup || echo "No lock file to backup"
+          
+          # 更新依赖
+          npm update
+          
+          # 检查是否有变化
+          if ! cmp -s package-lock.json package-lock.json.backup 2>/dev/null; then
+            echo "Dependencies updated"
+            echo "DEPS_UPDATED=true" >> $GITHUB_ENV
+          else
+            echo "No dependency updates available"
+            echo "DEPS_UPDATED=false" >> $GITHUB_ENV
+          fi
+
+      - name: Run tests
+        if: env.DEPS_UPDATED == 'true'
+        run: |
+          cd frontend
+          npm test -- --watchAll=false --passWithNoTests
+
+      - name: Run build
+        if: env.DEPS_UPDATED == 'true'
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Create Pull Request
+        if: env.DEPS_UPDATED == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(deps): update Node.js dependencies"
+          title: "🔄 Update Node.js Dependencies"
+          body: |
+            ## Node.js Dependencies Update
+            
+            This PR updates Node.js dependencies to their latest versions.
+            
+            ### Changes
+            - Updated dependencies in `frontend/package.json`
+            - All tests are passing ✅
+            - Build is successful ✅
+            
+            ### Review Checklist
+            - [ ] Check for breaking changes in updated packages
+            - [ ] Verify all tests pass
+            - [ ] Verify build is successful
+            - [ ] Review security advisories for updated packages
+            
+            ---
+            *This PR was automatically created by the dependency update workflow.*
+          branch: chore/update-node-deps
+          delete-branch: true
+
+  # 安全更新检查
+  security-update:
+    name: Security Update Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      # Python安全检查
+      - name: Python security check
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv sync
+          
+          # 运行安全检查
+          uv run safety check --json > safety-report.json || true
+          
+          # 检查是否有安全问题
+          if [ -s safety-report.json ] && [ "$(cat safety-report.json)" != "[]" ]; then
+            echo "PYTHON_SECURITY_ISSUES=true" >> $GITHUB_ENV
+            echo "Python security issues found:"
+            cat safety-report.json
+          else
+            echo "PYTHON_SECURITY_ISSUES=false" >> $GITHUB_ENV
+            echo "No Python security issues found"
+          fi
+
+      # Node.js安全检查
+      - name: Node.js security check
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm ci
+          
+          # 运行安全审计
+          npm audit --audit-level=high --json > audit-report.json || true
+          
+          # 检查是否有高危安全问题
+          if [ -s audit-report.json ]; then
+            HIGH_VULNS=$(cat audit-report.json | jq '.metadata.vulnerabilities.high // 0')
+            CRITICAL_VULNS=$(cat audit-report.json | jq '.metadata.vulnerabilities.critical // 0')
+            
+            if [ "$HIGH_VULNS" -gt 0 ] || [ "$CRITICAL_VULNS" -gt 0 ]; then
+              echo "NODE_SECURITY_ISSUES=true" >> $GITHUB_ENV
+              echo "Node.js security issues found:"
+              echo "High: $HIGH_VULNS, Critical: $CRITICAL_VULNS"
+            else
+              echo "NODE_SECURITY_ISSUES=false" >> $GITHUB_ENV
+              echo "No high/critical Node.js security issues found"
+            fi
+          else
+            echo "NODE_SECURITY_ISSUES=false" >> $GITHUB_ENV
+          fi
+
+      # 创建安全问题Issue
+      - name: Create security issue
+        if: env.PYTHON_SECURITY_ISSUES == 'true' || env.NODE_SECURITY_ISSUES == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let body = '## 🚨 Security Vulnerabilities Detected\n\n';
+            body += 'The automated security scan has detected vulnerabilities in the project dependencies.\n\n';
+            
+            if (process.env.PYTHON_SECURITY_ISSUES === 'true') {
+              body += '### Python Dependencies\n';
+              try {
+                const safetyReport = JSON.parse(fs.readFileSync('backend/safety-report.json', 'utf8'));
+                body += '```json\n' + JSON.stringify(safetyReport, null, 2) + '\n```\n\n';
+              } catch (e) {
+                body += 'Error reading Python security report\n\n';
+              }
+            }
+            
+            if (process.env.NODE_SECURITY_ISSUES === 'true') {
+              body += '### Node.js Dependencies\n';
+              try {
+                const auditReport = JSON.parse(fs.readFileSync('frontend/audit-report.json', 'utf8'));
+                body += `High vulnerabilities: ${auditReport.metadata.vulnerabilities.high || 0}\n`;
+                body += `Critical vulnerabilities: ${auditReport.metadata.vulnerabilities.critical || 0}\n\n`;
+              } catch (e) {
+                body += 'Error reading Node.js security report\n\n';
+              }
+            }
+            
+            body += '### Action Required\n';
+            body += '- [ ] Review the security vulnerabilities\n';
+            body += '- [ ] Update affected dependencies\n';
+            body += '- [ ] Test the application after updates\n';
+            body += '- [ ] Close this issue once resolved\n\n';
+            body += '---\n';
+            body += '*This issue was automatically created by the security update workflow.*';
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Security Vulnerabilities Detected',
+              body: body,
+              labels: ['security', 'dependencies', 'high-priority']
+            });
+
+  # 生成依赖报告
+  dependency-report:
+    name: Generate Dependency Report
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Generate Python dependency report
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv sync
+          
+          echo "# Python Dependencies Report" > ../dependency-report.md
+          echo "" >> ../dependency-report.md
+          echo "Generated on: $(date)" >> ../dependency-report.md
+          echo "" >> ../dependency-report.md
+          echo "## Installed Packages" >> ../dependency-report.md
+          echo "" >> ../dependency-report.md
+          uv pip list --format=markdown >> ../dependency-report.md || echo "Failed to generate Python dependency list" >> ../dependency-report.md
+
+      - name: Generate Node.js dependency report
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm ci
+          
+          echo "" >> ../dependency-report.md
+          echo "## Node.js Dependencies" >> ../dependency-report.md
+          echo "" >> ../dependency-report.md
+          echo "### Production Dependencies" >> ../dependency-report.md
+          echo "" >> ../dependency-report.md
+          npm list --prod --depth=0 >> ../dependency-report.md || echo "Failed to generate Node.js dependency list" >> ../dependency-report.md
+          
+          echo "" >> ../dependency-report.md
+          echo "### Development Dependencies" >> ../dependency-report.md
+          echo "" >> ../dependency-report.md
+          npm list --dev --depth=0 >> ../dependency-report.md || echo "Failed to generate Node.js dev dependency list" >> ../dependency-report.md
+
+      - name: Upload dependency report
+        uses: actions/upload-artifact@v3
+        with:
+          name: dependency-report
+          path: dependency-report.md
+          retention-days: 30

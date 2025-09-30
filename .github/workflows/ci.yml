@@ -1,0 +1,430 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+  UV_VERSION: '0.1.0'
+
+jobs:
+  # 代码质量检查
+  lint:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      # 后端代码质量检查
+      - name: Backend - Install dependencies
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv sync
+
+      - name: Backend - Code formatting check
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv run black --check --diff .
+
+      - name: Backend - Import sorting check
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv run isort --check-only --diff .
+
+      - name: Backend - Linting
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv run flake8 .
+
+      - name: Backend - Type checking
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv run mypy .
+
+      # 前端代码质量检查
+      - name: Frontend - Install dependencies
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Frontend - Linting
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm run lint
+
+      - name: Frontend - Type checking
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm run type-check
+
+  # 安全检查
+  security:
+    name: Security Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # 后端安全检查
+      - name: Backend - Install dependencies
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv sync
+
+      - name: Backend - Security check
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv run bandit -r src/
+
+      - name: Backend - Dependency security check
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv run safety check
+
+      # 前端安全检查
+      - name: Frontend - Install dependencies
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Frontend - Security audit
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm audit --audit-level=high
+
+  # 测试
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+        node-version: ['16', '18', '20']
+    
+    services:
+      # 测试数据库服务
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agentpedia_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      # 后端测试
+      - name: Backend - Install dependencies
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv sync
+
+      - name: Backend - Run tests
+        if: hashFiles('backend/pyproject.toml') != ''
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/agentpedia_test
+          REDIS_URL: redis://localhost:6379/0
+          ENVIRONMENT: test
+        run: |
+          cd backend
+          uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term-missing --cov-fail-under=80
+
+      - name: Backend - Upload coverage to Codecov
+        if: hashFiles('backend/pyproject.toml') != '' && matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v3
+        with:
+          file: backend/coverage.xml
+          flags: backend
+          name: backend-coverage
+
+      # 前端测试
+      - name: Frontend - Install dependencies
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Frontend - Run tests
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm test -- --coverage --watchAll=false --passWithNoTests
+
+      - name: Frontend - Upload coverage to Codecov
+        if: hashFiles('frontend/package.json') != '' && matrix.node-version == '18'
+        uses: codecov/codecov-action@v3
+        with:
+          file: frontend/coverage/lcov.info
+          flags: frontend
+          name: frontend-coverage
+
+  # 构建检查
+  build:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      # 后端构建检查
+      - name: Backend - Install dependencies
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv sync
+
+      - name: Backend - Build check
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv build
+
+      # 前端构建检查
+      - name: Frontend - Install dependencies
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Frontend - Build
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Frontend - Export static files
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm run export || echo "Export command not available"
+
+  # 集成测试
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agentpedia_integration
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          if [ -f "backend/pyproject.toml" ]; then
+            cd backend && uv sync && cd ..
+          fi
+          if [ -f "frontend/package.json" ]; then
+            cd frontend && npm ci && cd ..
+          fi
+
+      - name: Start services
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/agentpedia_integration
+          REDIS_URL: redis://localhost:6379/0
+          ENVIRONMENT: integration
+        run: |
+          chmod +x bootstrap.sh
+          ./bootstrap.sh test
+
+      - name: Run integration tests
+        run: |
+          # 这里可以添加端到端测试
+          echo "Integration tests would run here"
+
+  # 部署到开发环境
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [integration]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    environment: development
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to development
+        run: |
+          echo "Deploying to development environment"
+          # 这里添加部署到开发环境的逻辑
+
+  # 部署到生产环境
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [integration]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production environment"
+          # 这里添加部署到生产环境的逻辑
+
+  # 通知
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, deploy-prod]
+    if: always()
+    
+    steps:
+      - name: Notify on success
+        if: needs.deploy-dev.result == 'success' || needs.deploy-prod.result == 'success'
+        run: |
+          echo "Deployment successful! 🎉"
+          # 这里可以添加成功通知逻辑，如发送到Slack、邮件等
+
+      - name: Notify on failure
+        if: needs.deploy-dev.result == 'failure' || needs.deploy-prod.result == 'failure'
+        run: |
+          echo "Deployment failed! ❌"
+          # 这里可以添加失败通知逻辑

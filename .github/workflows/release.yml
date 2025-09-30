@@ -1,0 +1,419 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  # 验证发布
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          # 检查是否为预发布版本
+          if [[ $VERSION =~ -[a-zA-Z] ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ ! $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "Invalid version format: $VERSION"
+            echo "Expected format: vX.Y.Z or vX.Y.Z-suffix"
+            exit 1
+          fi
+
+      - name: Check if tag exists
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists"
+            exit 1
+          fi
+
+  # 运行完整测试套件
+  test:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    needs: validate
+    
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+        node-version: ['16', '18', '20']
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agentpedia_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Run full test suite
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/agentpedia_test
+          REDIS_URL: redis://localhost:6379/0
+          ENVIRONMENT: test
+        run: |
+          chmod +x bootstrap.sh
+          ./bootstrap.sh test
+
+  # 构建发布包
+  build:
+    name: Build Release Packages
+    runs-on: ubuntu-latest
+    needs: [validate, test]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # 构建后端包
+      - name: Build backend package
+        if: hashFiles('backend/pyproject.toml') != ''
+        run: |
+          cd backend
+          uv sync
+          uv build
+          
+      - name: Upload backend artifacts
+        if: hashFiles('backend/pyproject.toml') != ''
+        uses: actions/upload-artifact@v3
+        with:
+          name: backend-dist
+          path: backend/dist/
+
+      # 构建前端包
+      - name: Build frontend package
+        if: hashFiles('frontend/package.json') != ''
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+          
+      - name: Upload frontend artifacts
+        if: hashFiles('frontend/package.json') != ''
+        uses: actions/upload-artifact@v3
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+      # 创建发布包
+      - name: Create release package
+        run: |
+          mkdir -p release-package
+          
+          # 复制必要文件
+          cp bootstrap.sh release-package/
+          cp README.md release-package/ || echo "README.md not found"
+          cp LICENSE release-package/ || echo "LICENSE not found"
+          
+          # 复制配置文件
+          if [ -f "docker-compose.yml" ]; then
+            cp docker-compose.yml release-package/
+          fi
+          
+          # 创建版本信息文件
+          echo "${{ needs.validate.outputs.version }}" > release-package/VERSION
+          echo "Built on: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> release-package/BUILD_INFO
+          echo "Commit: ${{ github.sha }}" >> release-package/BUILD_INFO
+          
+          # 打包
+          tar -czf agentpedia-${{ needs.validate.outputs.version }}.tar.gz -C release-package .
+          
+      - name: Upload release package
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-package
+          path: agentpedia-${{ needs.validate.outputs.version }}.tar.gz
+
+  # 安全扫描
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: validate
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # 创建GitHub发布
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, test, build, security-scan]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release package
+        uses: actions/download-artifact@v3
+        with:
+          name: release-package
+
+      - name: Download backend artifacts
+        if: hashFiles('backend/pyproject.toml') != ''
+        uses: actions/download-artifact@v3
+        with:
+          name: backend-dist
+          path: backend-dist/
+
+      - name: Download frontend artifacts
+        if: hashFiles('frontend/package.json') != ''
+        uses: actions/download-artifact@v3
+        with:
+          name: frontend-dist
+          path: frontend-dist/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # 获取上一个标签
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "## Changes since $PREVIOUS_TAG" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            
+            # 生成提交日志
+            git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD >> CHANGELOG.md
+          else
+            echo "## Initial Release" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "This is the first release of AgentPedia." >> CHANGELOG.md
+          fi
+          
+          # 添加发布信息
+          echo "" >> CHANGELOG.md
+          echo "## Release Information" >> CHANGELOG.md
+          echo "- **Version**: ${{ needs.validate.outputs.version }}" >> CHANGELOG.md
+          echo "- **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> CHANGELOG.md
+          echo "- **Commit**: ${{ github.sha }}" >> CHANGELOG.md
+          
+          # 设置输出
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          cat CHANGELOG.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.validate.outputs.version }}" -m "Release ${{ needs.validate.outputs.version }}"
+          git push origin "${{ needs.validate.outputs.version }}"
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.validate.outputs.version }}
+          release_name: AgentPedia ${{ needs.validate.outputs.version }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ needs.validate.outputs.is_prerelease }}
+
+      - name: Upload release assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: agentpedia-${{ needs.validate.outputs.version }}.tar.gz
+          asset_name: agentpedia-${{ needs.validate.outputs.version }}.tar.gz
+          asset_content_type: application/gzip
+
+  # 发布到包管理器
+  publish:
+    name: Publish Packages
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    if: needs.validate.outputs.is_prerelease == 'false'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download backend artifacts
+        if: hashFiles('backend/pyproject.toml') != ''
+        uses: actions/download-artifact@v3
+        with:
+          name: backend-dist
+          path: backend/dist/
+
+      - name: Publish to PyPI
+        if: hashFiles('backend/pyproject.toml') != ''
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          cd backend
+          uv run twine upload dist/*
+
+      - name: Download frontend artifacts
+        if: hashFiles('frontend/package.json') != ''
+        uses: actions/download-artifact@v3
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+      - name: Publish to npm
+        if: hashFiles('frontend/package.json') != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd frontend
+          npm publish
+
+  # 部署到生产环境
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    environment: production
+    
+    steps:
+      - name: Deploy to production
+        run: |
+          echo "Deploying AgentPedia ${{ needs.validate.outputs.version }} to production"
+          # 这里添加生产环境部署逻辑
+
+  # 通知
+  notify:
+    name: Release Notification
+    runs-on: ubuntu-latest
+    needs: [create-release, publish, deploy]
+    if: always()
+    
+    steps:
+      - name: Notify on success
+        if: needs.create-release.result == 'success'
+        run: |
+          echo "🎉 AgentPedia ${{ needs.validate.outputs.version }} has been successfully released!"
+          # 这里可以添加成功通知逻辑
+
+      - name: Notify on failure
+        if: needs.create-release.result == 'failure'
+        run: |
+          echo "❌ Release of AgentPedia ${{ needs.validate.outputs.version }} failed!"
+          # 这里可以添加失败通知逻辑
