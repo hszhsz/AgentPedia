@@ -10,7 +10,7 @@ from prometheus_client import make_asgi_app
 
 from agentpedia.api.v1.api import api_router
 from agentpedia.core.config import get_settings
-from agentpedia.core.database import close_db, init_db
+from agentpedia.core.database import close_db, init_db, AsyncSessionLocal
 from agentpedia.core.logging import (
     PerformanceLoggingMiddleware,
     RequestLoggingMiddleware,
@@ -18,6 +18,9 @@ from agentpedia.core.logging import (
     get_logger,
 )
 from agentpedia.core.redis import redis_manager
+from agentpedia.core.security import get_password_hash
+from sqlalchemy import select
+from agentpedia.models.user import User, UserRole, UserStatus
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -39,6 +42,29 @@ async def lifespan(app: FastAPI):
     # 初始化Redis
     await redis_manager.init_redis()
     logger.info("Redis initialized")
+
+    # 在开发/测试环境下，预置一个Mock管理员用户以支持无鉴权访问
+    if settings.MOCK_AUTH_ENABLED:
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(User).where(User.username == "mock_admin")
+                )
+                mock = result.scalar_one_or_none()
+                if not mock:
+                    mock = User(
+                        username="mock_admin",
+                        email="mock@example.com",
+                        hashed_password=get_password_hash("mockpass"),
+                        role=UserRole.ADMIN,
+                        status=UserStatus.ACTIVE,
+                        full_name="Mock Admin",
+                    )
+                    session.add(mock)
+                    await session.commit()
+                    logger.info("Seeded mock admin user")
+        except Exception as e:
+            logger.warning("Seeding mock user failed", error=str(e))
     
     yield
     

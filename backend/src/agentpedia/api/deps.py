@@ -9,6 +9,8 @@ from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentpedia.core.config import settings
+from agentpedia.core.security import get_password_hash
+from agentpedia.models.user import User, UserRole, UserStatus
 from agentpedia.core.database import get_db
 from agentpedia.models.user import User
 from agentpedia.services.user_service import UserService
@@ -22,6 +24,17 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db)
 ) -> User:
     """获取当前用户"""
+    # 在开发/测试环境下启用Mock权限：直接返回一个Mock管理员用户
+    if settings.MOCK_AUTH_ENABLED:
+        mock = User(
+            id=1,
+            username="mock_admin",
+            email="mock@example.com",
+            hashed_password=get_password_hash("mockpass"),
+            role=UserRole.ADMIN,
+            status=UserStatus.ACTIVE,
+        )
+        return mock
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -70,7 +83,9 @@ async def get_current_admin_user(
     current_user: User = Depends(get_current_user)
 ) -> User:
     """获取当前管理员用户"""
-    if not current_user.is_admin:
+    if settings.MOCK_AUTH_ENABLED:
+        return current_user
+    if not getattr(current_user, "is_admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
@@ -83,6 +98,15 @@ async def get_optional_current_user(
     db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """获取可选的当前用户（用于公开接口）"""
+    if settings.MOCK_AUTH_ENABLED:
+        return User(
+            id=1,
+            username="mock_admin",
+            email="mock@example.com",
+            hashed_password=get_password_hash("mockpass"),
+            role=UserRole.ADMIN,
+            status=UserStatus.ACTIVE,
+        )
     if not credentials:
         return None
     

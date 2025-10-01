@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     # 测试配置
     TESTING: bool = False
     TEST_DATABASE_URL: Optional[str] = None
+    # Mock权限控制
+    MOCK_AUTH_ENABLED: bool = False
     
     class Config:
         env_file = ".env"
@@ -131,6 +133,7 @@ class DevelopmentSettings(Settings):
     DEBUG: bool = True
     LOG_LEVEL: str = "DEBUG"
     ENVIRONMENT: str = "development"
+    MOCK_AUTH_ENABLED: bool = True
 
 
 class ProductionSettings(Settings):
@@ -149,6 +152,7 @@ class TestingSettings(Settings):
     ENVIRONMENT: str = "testing"
     POSTGRES_DB: str = "agentpedia_test"
     REDIS_DB: int = 1
+    MOCK_AUTH_ENABLED: bool = True
 
 
 def get_settings_by_env(env: str = None) -> Settings:

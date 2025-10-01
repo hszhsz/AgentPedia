@@ -21,6 +21,26 @@ uv run src/agentpedia/main.py
 uv run pytest
 ```
 
+### 使用本地虚拟环境(.venv)运行测试
+
+如果你使用的是 `.venv` 虚拟环境（如本仓库的启动脚本创建）：
+
+1. 激活虚拟环境：
+```bash
+source .venv/bin/activate
+```
+
+2. 安装依赖（若虚拟环境没有 pip，可用 `python -m ensurepip --upgrade` 安装）：
+```bash
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+3. 运行测试（确保 `src` 在 Python 路径中）：
+```bash
+PYTHONPATH=./src pytest -q
+```
+
 ## 项目结构
 
 - `src/agentpedia/` - 主要应用代码
