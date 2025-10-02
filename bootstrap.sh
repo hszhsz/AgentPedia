@@ -174,8 +174,16 @@ start_dev() {
         cd backend && nohup uv run python src/agentpedia/main.py > ../logs/backend.log 2>&1 &
         BACKEND_PID=$!
         cd ..
+
+        # 确保logs目录存在并写入PID文件
+        mkdir -p logs
         echo $BACKEND_PID > logs/backend.pid
-        log_success "后端服务启动中 (PID: $BACKEND_PID)"
+        if [ $? -eq 0 ]; then
+            log_success "后端服务启动中 (PID: $BACKEND_PID)"
+        else
+            log_error "无法写入后端PID文件"
+            exit 1
+        fi
         
         # 等待后端服务启动
         wait_for_service "http://localhost:8000/docs" "后端服务"
@@ -189,8 +197,16 @@ start_dev() {
         cd frontend && nohup npm run dev > ../logs/frontend.log 2>&1 &
         FRONTEND_PID=$!
         cd ..
+
+        # 确保logs目录存在并写入PID文件
+        mkdir -p logs
         echo $FRONTEND_PID > logs/frontend.pid
-        log_success "前端服务启动中 (PID: $FRONTEND_PID)"
+        if [ $? -eq 0 ]; then
+            log_success "前端服务启动中 (PID: $FRONTEND_PID)"
+        else
+            log_error "无法写入前端PID文件"
+            exit 1
+        fi
         
         # 等待前端服务启动
         wait_for_service "http://localhost:5173" "前端服务"
@@ -228,9 +244,17 @@ start_prod() {
         log_info "启动生产服务..."
         cd frontend && nohup npm start > logs/production.log 2>&1 &
         PROD_PID=$!
-        echo $PROD_PID > ../logs/production.pid
         cd ..
-        log_success "生产服务启动中 (PID: $PROD_PID)"
+
+        # 确保logs目录存在并写入PID文件
+        mkdir -p logs
+        echo $PROD_PID > logs/production.pid
+        if [ $? -eq 0 ]; then
+            log_success "生产服务启动中 (PID: $PROD_PID)"
+        else
+            log_error "无法写入生产PID文件"
+            exit 1
+        fi
         
         wait_for_service "http://localhost:3000" "生产服务"
     fi
@@ -255,37 +279,43 @@ start_test() {
 # 停止服务
 stop_services() {
     log_info "🛑 停止所有服务..."
-    
+
     # 停止后端服务
     if [ -f "logs/backend.pid" ]; then
         BACKEND_PID=$(cat logs/backend.pid)
         if kill -0 $BACKEND_PID 2>/dev/null; then
             kill $BACKEND_PID
             log_success "后端服务已停止 (PID: $BACKEND_PID)"
+        else
+            log_warning "后端进程 $BACKEND_PID 不存在，清理陈旧的PID文件"
         fi
         rm -f logs/backend.pid
     fi
-    
+
     # 停止前端服务
     if [ -f "logs/frontend.pid" ]; then
         FRONTEND_PID=$(cat logs/frontend.pid)
         if kill -0 $FRONTEND_PID 2>/dev/null; then
             kill $FRONTEND_PID
             log_success "前端服务已停止 (PID: $FRONTEND_PID)"
+        else
+            log_warning "前端进程 $FRONTEND_PID 不存在，清理陈旧的PID文件"
         fi
         rm -f logs/frontend.pid
     fi
-    
+
     # 停止生产服务
     if [ -f "logs/production.pid" ]; then
         PROD_PID=$(cat logs/production.pid)
         if kill -0 $PROD_PID 2>/dev/null; then
             kill $PROD_PID
             log_success "生产服务已停止 (PID: $PROD_PID)"
+        else
+            log_warning "生产进程 $PROD_PID 不存在，清理陈旧的PID文件"
         fi
         rm -f logs/production.pid
     fi
-    
+
     log_success "✅ 所有服务已停止"
 }
 
