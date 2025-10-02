@@ -121,7 +121,7 @@ class Settings(BaseSettings):
         return f"mongodb://{self.MONGODB_HOST}:{self.MONGODB_PORT}/{self.MONGODB_DATABASE}"
 
     # Elasticsearch配置
-    ELASTICSEARCH_HOSTS: str = "localhost:9200"
+    ELASTICSEARCH_HOSTS: str = "http://localhost:9200"
     ELASTICSEARCH_USERNAME: Optional[str] = None
     ELASTICSEARCH_PASSWORD: Optional[str] = None
     ELASTICSEARCH_USE_SSL: bool = False
