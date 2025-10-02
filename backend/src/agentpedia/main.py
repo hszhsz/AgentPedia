@@ -18,6 +18,7 @@ from agentpedia.core.logging import (
     get_logger,
 )
 from agentpedia.core.redis import redis_manager
+from agentpedia.core.mongodb import mongodb_manager
 from agentpedia.core.security import get_password_hash
 from sqlalchemy import select
 from agentpedia.models.user import User, UserRole, UserStatus
@@ -42,6 +43,17 @@ async def lifespan(app: FastAPI):
     # 初始化Redis
     await redis_manager.init_redis()
     logger.info("Redis initialized")
+    
+    # 初始化MongoDB
+    await mongodb_manager.init_mongodb()
+    logger.info("MongoDB initialized")
+    
+    # 初始化MongoDB服务
+    from agentpedia.services.mongodb_agent_service import mongodb_agent_service
+    from agentpedia.services.favorite_service import favorite_service
+    await mongodb_agent_service.init_service()
+    await favorite_service.init_service()
+    logger.info("MongoDB services initialized")
 
     # 在开发/测试环境下，预置一个Mock管理员用户以支持无鉴权访问
     if settings.MOCK_AUTH_ENABLED:
@@ -78,6 +90,10 @@ async def lifespan(app: FastAPI):
     # 关闭Redis连接
     await redis_manager.close_redis()
     logger.info("Redis connections closed")
+    
+    # 关闭MongoDB连接
+    await mongodb_manager.close_mongodb()
+    logger.info("MongoDB connections closed")
 
 
 def create_app() -> FastAPI:

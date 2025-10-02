@@ -1,0 +1,2 @@
+# Scripts dependencies
+httpx==0.25.2

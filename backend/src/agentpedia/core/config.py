@@ -65,6 +65,14 @@ class Settings(BaseSettings):
         password_part = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
         return f"redis://{password_part}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
     
+    # MongoDB配置
+    MONGODB_HOST: str = "localhost"
+    MONGODB_PORT: int = 27017
+    MONGODB_USER: Optional[str] = None
+    MONGODB_PASSWORD: Optional[str] = None
+    MONGODB_DATABASE: str = "agentpedia"
+    MONGODB_URL: Optional[str] = None
+    
     # Celery配置
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"

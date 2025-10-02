@@ -16,6 +16,11 @@ uv sync
 uv run src/agentpedia/main.py
 ```
 
+3. 初始化示例数据：
+```bash
+uv run scripts/init_sample_data.py
+```
+
 3. 运行测试：
 ```bash
 uv run pytest
@@ -46,6 +51,7 @@ PYTHONPATH=./src pytest -q
 - `src/agentpedia/` - 主要应用代码
 - `tests/` - 测试代码
 - `alembic/` - 数据库迁移文件
+- `scripts/` - 数据初始化脚本
 
 ## 环境变量
 
