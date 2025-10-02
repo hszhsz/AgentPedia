@@ -2,6 +2,7 @@
 根据PRD文档要求的Agent Schema定义
 """
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
@@ -52,7 +53,7 @@ class BusinessInfo(BaseModel):
     partners: Optional[List[str]] = Field(None, description="合作伙伴")
 
 
-class AgentStatus(str):
+class AgentStatus(str, Enum):
     """Agent状态枚举"""
     CONCEPT = "concept"
     ALPHA = "alpha"

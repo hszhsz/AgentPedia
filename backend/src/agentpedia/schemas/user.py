@@ -6,15 +6,16 @@ from typing import Optional
 
 from pydantic import EmailStr, Field, validator
 
-from agentpedia.models.user import UserRole, UserStatus
+from agentpedia.models.user import UserRole, UserStatus, LoginMethod
 from agentpedia.schemas.base import BaseSchema, IDSchema, TimestampSchema
 
 
 class UserBase(BaseSchema):
     """用户基础模式"""
-    
-    username: str = Field(..., description="用户名", min_length=3, max_length=50)
-    email: EmailStr = Field(..., description="邮箱")
+
+    username: Optional[str] = Field(None, description="用户名", min_length=3, max_length=50)
+    email: Optional[EmailStr] = Field(None, description="邮箱")
+    nickname: Optional[str] = Field(None, description="昵称", max_length=100)
     full_name: Optional[str] = Field(None, description="全名", max_length=100)
     bio: Optional[str] = Field(None, description="个人简介", max_length=500)
     avatar_url: Optional[str] = Field(None, description="头像URL", max_length=500)
@@ -87,7 +88,8 @@ class UserUpdate(BaseSchema):
 
 class UserResponse(UserBase, IDSchema, TimestampSchema):
     """用户响应模式"""
-    
+
+    login_method: LoginMethod = Field(..., description="登录方式")
     role: UserRole = Field(..., description="用户角色")
     status: UserStatus = Field(..., description="用户状态")
     is_email_verified: bool = Field(..., description="邮箱是否已验证")
@@ -200,7 +202,7 @@ class RefreshToken(BaseSchema):
 
 class UserStats(BaseSchema):
     """用户统计模式"""
-    
+
     total_agents: int = Field(..., description="Agent总数")
     active_agents: int = Field(..., description="活跃Agent数")
     total_conversations: int = Field(..., description="对话总数")
@@ -208,3 +210,29 @@ class UserStats(BaseSchema):
     total_tokens_used: int = Field(..., description="总token使用量")
     total_cost: float = Field(..., description="总费用")
     api_keys_count: int = Field(..., description="API密钥数量")
+
+
+class WechatUserCreate(BaseSchema):
+    """微信用户创建模式"""
+
+    openid: str = Field(..., description="微信openid")
+    unionid: Optional[str] = Field(None, description="微信unionid")
+    nickname: Optional[str] = Field(None, description="昵称", max_length=100)
+    avatar_url: Optional[str] = Field(None, description="头像URL", max_length=500)
+    timezone: str = Field("UTC", description="时区", max_length=50)
+    language: str = Field("zh", description="语言", max_length=10)
+    theme: str = Field("light", description="主题", max_length=20)
+
+
+class WechatUserInfo(BaseSchema):
+    """微信用户信息模式"""
+
+    openid: str = Field(..., description="用户openid")
+    nickname: Optional[str] = Field(None, description="昵称")
+    avatar_url: Optional[str] = Field(None, description="头像URL")
+    unionid: Optional[str] = Field(None, description="用户unionid")
+    sex: Optional[int] = Field(None, description="性别")
+    language: Optional[str] = Field(None, description="语言")
+    city: Optional[str] = Field(None, description="城市")
+    province: Optional[str] = Field(None, description="省份")
+    country: Optional[str] = Field(None, description="国家")

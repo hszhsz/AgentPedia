@@ -83,12 +83,12 @@ setup_directories() {
 # 安装依赖
 install_dependencies() {
     log_info "检查并安装依赖..."
-    
+
     # 检查必要的命令
     check_command "uv"
     check_command "node"
     check_command "npm"
-    
+
     # 安装后端依赖
     if [ -f "backend/pyproject.toml" ]; then
         log_info "安装后端依赖..."
@@ -97,7 +97,7 @@ install_dependencies() {
     else
         log_warning "未找到 backend/pyproject.toml，跳过后端依赖安装"
     fi
-    
+
     # 安装前端依赖
     if [ -f "frontend/package.json" ]; then
         log_info "安装前端依赖..."
@@ -127,42 +127,114 @@ run_tests() {
     fi
 }
 
+# 启动Docker依赖服务
+start_docker_services() {
+    log_info "🐳 启动Docker依赖服务..."
+
+    # 检查Docker是否运行
+    if ! command -v docker &> /dev/null; then
+        log_warning "Docker未安装，使用本地服务..."
+        start_local_services
+        return
+    fi
+
+    if ! docker info > /dev/null 2>&1; then
+        log_warning "Docker未运行，使用本地服务..."
+        start_local_services
+        return
+    fi
+
+    # 启动基础服务
+    log_info "启动PostgreSQL、Redis、MongoDB、Elasticsearch..."
+    docker compose up -d postgres redis mongodb elasticsearch
+
+    # 等待服务健康检查通过
+    log_info "等待服务启动..."
+    sleep 15
+
+    # 检查服务状态
+    for service in postgres redis mongodb elasticsearch; do
+        if docker compose ps $service | grep -q "Up (healthy)"; then
+            log_success "$service 服务启动成功"
+        else
+            log_warning "$service 服务可能还在启动中"
+        fi
+    done
+
+    log_success "Docker依赖服务启动完成"
+}
+
+# 启动本地服务（作为Docker的备选方案）
+start_local_services() {
+    log_info "🔧 启动本地服务..."
+
+    # 检查并启动数据库服务
+    if command -v brew &> /dev/null; then
+        log_info "检查数据库服务..."
+        if ! brew services list | grep postgresql | grep started > /dev/null; then
+            log_info "启动PostgreSQL服务..."
+            brew services start postgresql@14
+            sleep 3
+        fi
+        log_success "PostgreSQL服务运行中"
+
+        # 检查并启动Redis服务
+        log_info "检查Redis服务..."
+        if ! brew services list | grep redis | grep started > /dev/null; then
+            log_info "启动Redis服务..."
+            brew services start redis
+            sleep 2
+        fi
+        log_success "Redis服务运行中"
+    else
+        log_warning "Homebrew未安装，请手动启动PostgreSQL和Redis服务"
+    fi
+
+    log_success "本地服务启动完成"
+}
+
+# 停止Docker依赖服务
+stop_docker_services() {
+    log_info "🐳 停止Docker依赖服务..."
+
+    if command -v docker &> /dev/null && docker info > /dev/null 2>&1; then
+        docker compose down
+        log_success "Docker依赖服务已停止"
+    else
+        log_info "停止本地服务..."
+        if command -v brew &> /dev/null; then
+            brew services stop postgresql@14 2>/dev/null || true
+            brew services stop redis 2>/dev/null || true
+            log_success "本地服务已停止"
+        fi
+    fi
+}
+
 # 启动开发环境
 start_dev() {
     log_info "🚀 启动开发环境..."
-    
+
     setup_directories
     install_dependencies
-    
+
     # 检查端口
     if ! check_port 8000; then
         log_error "后端端口 8000 被占用，请释放端口后重试"
         exit 1
     fi
-    
+
     if ! check_port 5173; then
         log_error "前端端口 5173 被占用，请释放端口后重试"
         exit 1
     fi
-    
-    # 检查并启动数据库服务
-    log_info "检查数据库服务..."
-    if ! brew services list | grep postgresql | grep started > /dev/null; then
-        log_info "启动PostgreSQL服务..."
-        brew services start postgresql@14
-        sleep 3
-    fi
-    log_success "PostgreSQL服务运行中"
-    
-    # 检查并启动Redis服务
-    log_info "检查Redis服务..."
-    if ! brew services list | grep redis | grep started > /dev/null; then
-        log_info "启动Redis服务..."
-        brew services start redis
-        sleep 2
-    fi
-    log_success "Redis服务运行中"
-    
+
+    # 启动Docker依赖服务
+    start_docker_services
+
+    # 等待数据库完全启动
+    log_info "等待数据库完全启动..."
+    sleep 15
+
     # 运行数据库迁移
     log_info "运行数据库迁移..."
     cd backend && uv run alembic upgrade head && cd ..
@@ -315,6 +387,9 @@ stop_services() {
         fi
         rm -f logs/production.pid
     fi
+
+    # 停止Docker依赖服务
+    stop_docker_services
 
     log_success "✅ 所有服务已停止"
 }

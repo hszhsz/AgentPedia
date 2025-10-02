@@ -96,6 +96,37 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
     DEFAULT_MODEL: str = "gpt-3.5-turbo"
+
+    # 微信登录配置
+    WECHAT_APP_ID: Optional[str] = None
+    WECHAT_APP_SECRET: Optional[str] = None
+    WECHAT_REDIRECT_URI: Optional[str] = None
+    WECHAT_TOKEN: Optional[str] = None
+    WECHAT_ENCODING_AES_KEY: Optional[str] = None
+
+    # MongoDB配置
+    MONGODB_HOST: str = "localhost"
+    MONGODB_PORT: int = 27017
+    MONGODB_USER: Optional[str] = None
+    MONGODB_PASSWORD: Optional[str] = None
+    MONGODB_DATABASE: str = "agentpedia"
+    MONGODB_URL: Optional[str] = None
+
+    def get_mongodb_url(self) -> str:
+        """构建MongoDB连接URL"""
+        if self.MONGODB_URL:
+            return self.MONGODB_URL
+        if self.MONGODB_USER and self.MONGODB_PASSWORD:
+            return f"mongodb://{self.MONGODB_USER}:{self.MONGODB_PASSWORD}@{self.MONGODB_HOST}:{self.MONGODB_PORT}/{self.MONGODB_DATABASE}"
+        return f"mongodb://{self.MONGODB_HOST}:{self.MONGODB_PORT}/{self.MONGODB_DATABASE}"
+
+    # Elasticsearch配置
+    ELASTICSEARCH_HOSTS: str = "localhost:9200"
+    ELASTICSEARCH_USERNAME: Optional[str] = None
+    ELASTICSEARCH_PASSWORD: Optional[str] = None
+    ELASTICSEARCH_USE_SSL: bool = False
+    ELASTICSEARCH_VERIFY_CERTS: bool = True
+    ELASTICSEARCH_INDEX_PREFIX: str = "agentpedia"
     
     # 监控配置
     ENABLE_METRICS: bool = True

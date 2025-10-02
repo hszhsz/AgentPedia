@@ -19,6 +19,8 @@ from agentpedia.core.logging import (
 )
 from agentpedia.core.redis import redis_manager
 from agentpedia.core.mongodb import mongodb_manager
+from agentpedia.core.elasticsearch import elasticsearch_manager
+from agentpedia.services.search_service import search_service
 from agentpedia.core.security import get_password_hash
 from sqlalchemy import select
 from agentpedia.models.user import User, UserRole, UserStatus
@@ -45,15 +47,33 @@ async def lifespan(app: FastAPI):
     logger.info("Redis initialized")
     
     # 初始化MongoDB
-    await mongodb_manager.init_mongodb()
-    logger.info("MongoDB initialized")
-    
-    # 初始化MongoDB服务
-    from agentpedia.services.mongodb_agent_service import mongodb_agent_service
-    from agentpedia.services.favorite_service import favorite_service
-    await mongodb_agent_service.init_service()
-    await favorite_service.init_service()
-    logger.info("MongoDB services initialized")
+    try:
+        await mongodb_manager.init_mongodb()
+        logger.info("MongoDB initialized")
+
+        # 初始化MongoDB服务
+        from agentpedia.services.mongodb_agent_service import mongodb_agent_service
+        from agentpedia.services.favorite_service import favorite_service
+        await mongodb_agent_service.init_service()
+        await favorite_service.init_service()
+        logger.info("MongoDB services initialized")
+    except Exception as e:
+        logger.warning("Failed to initialize MongoDB", error=str(e))
+
+    # 初始化Elasticsearch
+    try:
+        await elasticsearch_manager.init_elasticsearch()
+        await elasticsearch_manager.create_agent_index()
+        logger.info("Elasticsearch initialized")
+    except Exception as e:
+        logger.warning("Failed to initialize Elasticsearch", error=str(e))
+
+    # 初始化搜索服务
+    try:
+        await search_service.initialize()
+        logger.info("Search service initialized")
+    except Exception as e:
+        logger.warning("Failed to initialize search service", error=str(e))
 
     # 在开发/测试环境下，预置一个Mock管理员用户以支持无鉴权访问
     if settings.MOCK_AUTH_ENABLED:
@@ -94,6 +114,13 @@ async def lifespan(app: FastAPI):
     # 关闭MongoDB连接
     await mongodb_manager.close_mongodb()
     logger.info("MongoDB connections closed")
+
+    # 关闭Elasticsearch连接
+    try:
+        await elasticsearch_manager.close_elasticsearch()
+        logger.info("Elasticsearch connections closed")
+    except Exception as e:
+        logger.warning("Failed to close Elasticsearch", error=str(e))
 
 
 def create_app() -> FastAPI:
