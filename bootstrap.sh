@@ -10,6 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+GRAY='\033[0;37m'
 NC='\033[0m' # No Color
 
 # 日志函数
@@ -40,7 +41,7 @@ check_command() {
 # 检查端口是否被占用
 check_port() {
     local port=$1
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null ; then
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
         log_warning "端口 $port 已被占用"
         return 1
     fi
@@ -57,8 +58,8 @@ wait_for_service() {
     log_info "等待 $service_name 启动..."
 
     while [ $attempt -le $max_attempts ]; do
-        # 尝试连接服务并检查HTTP状态码
-        response=$(curl -s -w "%{http_code}" -o /dev/null "$url" 2>/dev/null)
+        # 尝试连接服务并检查HTTP状态码（绕过代理访问本地服务）
+        response=$(curl --noproxy localhost -s -w "%{http_code}" -o /dev/null "$url" 2>/dev/null)
         curl_exit_code=$?
 
         if [ $curl_exit_code -eq 0 ] && [ "$response" = "200" ]; then
@@ -337,7 +338,12 @@ start_dev() {
         fi
         
         # 等待后端服务启动
-        wait_for_service "http://localhost:8000/health" "后端服务"
+        if wait_for_service "http://localhost:8000/health" "后端服务"; then
+            log_success "后端服务健康检查通过"
+        else
+            log_warning "后端服务健康检查失败，但继续启动前端服务"
+            log_warning "请检查后端服务日志: logs/backend.log"
+        fi
     else
         log_warning "未找到 backend/src/agentpedia/main.py，跳过后端服务启动"
     fi
@@ -345,13 +351,20 @@ start_dev() {
     # 启动前端服务
     if [ -f "frontend/package.json" ]; then
         log_info "启动前端服务..."
-        cd frontend && nohup npm run dev > ../logs/frontend.log 2>&1 &
+        
+        # 确保logs目录存在
+        mkdir -p logs
+        
+        # 获取当前目录的绝对路径
+        CURRENT_DIR=$(pwd)
+        
+        # 启动前端服务
+        cd frontend && nohup npm run dev > "${CURRENT_DIR}/logs/frontend.log" 2>&1 &
         FRONTEND_PID=$!
         cd ..
 
-        # 确保logs目录存在并写入PID文件
-        mkdir -p logs
-        echo $FRONTEND_PID > logs/frontend.pid
+        # 写入PID文件
+        echo $FRONTEND_PID > "${CURRENT_DIR}/logs/frontend.pid"
         if [ $? -eq 0 ]; then
             log_success "前端服务启动中 (PID: $FRONTEND_PID)"
         else
@@ -359,61 +372,105 @@ start_dev() {
             exit 1
         fi
         
-        # 等待前端服务启动
-        # 等待一下让前端服务确定使用的端口
-        sleep 3
-        # 从日志中获取实际使用的端口
-        FRONTEND_PORT=$(grep -o "Local:.*http://localhost:[0-9]*" ../logs/frontend.log | head -1 | grep -o "[0-9]*" || echo "5173")
-        if [ -z "$FRONTEND_PORT" ]; then
-            FRONTEND_PORT=5173
+        # 等待前端服务启动 - 先等待一段时间让服务初始化
+        log_info "等待前端服务初始化..."
+        sleep 5
+        
+        # 动态检测前端端口
+        DETECTED_PORT=""
+        MAX_WAIT=30
+        WAIT_COUNT=0
+        
+        while [ $WAIT_COUNT -lt $MAX_WAIT ] && [ -z "$DETECTED_PORT" ]; do
+            if [ -f "logs/frontend.log" ]; then
+                # 从日志中检测端口
+                DETECTED_PORT=$(grep -a "Local:" logs/frontend.log 2>/dev/null | grep -o "http://localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                               grep -a "Local:" logs/frontend.log 2>/dev/null | grep -o "localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                               grep -a "ready - started server" logs/frontend.log 2>/dev/null | grep -o ":[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                               echo "")
+            fi
+            
+            if [ -n "$DETECTED_PORT" ]; then
+                break
+            fi
+            
+            sleep 1
+            WAIT_COUNT=$((WAIT_COUNT + 1))
+        done
+        
+        # 如果没有检测到端口，尝试常用端口
+        if [ -z "$DETECTED_PORT" ]; then
+            log_info "从日志中未检测到端口，尝试检测常用端口..."
+            for port in 3000 5173 3001 3002; do
+                if curl --noproxy localhost -s -w "%{http_code}" -o /dev/null "http://localhost:$port" 2>/dev/null | grep -q "200"; then
+                    DETECTED_PORT=$port
+                    log_success "通过端口检测发现前端运行在端口: $DETECTED_PORT"
+                    break
+                fi
+            done
         fi
-        log_info "前端服务运行在端口: $FRONTEND_PORT"
-        wait_for_service "http://localhost:$FRONTEND_PORT" "前端服务"
+        
+        # 使用检测到的端口进行健康检查
+        if [ -n "$DETECTED_PORT" ]; then
+            if wait_for_service "http://localhost:$DETECTED_PORT" "前端服务"; then
+                log_success "前端服务健康检查通过 (端口: $DETECTED_PORT)"
+            else
+                log_warning "前端服务健康检查失败，但继续执行"
+                log_warning "请检查前端服务日志: logs/frontend.log"
+            fi
+        else
+            log_warning "无法检测到前端服务端口，跳过健康检查"
+            log_warning "请检查前端服务日志: logs/frontend.log"
+        fi
     else
         log_warning "未找到 frontend/package.json，跳过前端服务启动"
     fi
     
-    # 获取实际的前端端口
-    FRONTEND_ACTUAL_PORT=""
-    MAX_WAIT=20
-    WAIT_COUNT=0
-
-    log_info "检测前端服务端口..."
-    while [ $WAIT_COUNT -lt $MAX_WAIT ] && [ -z "$FRONTEND_ACTUAL_PORT" ]; do
-        sleep 1
-        # 检查多种可能的端口格式 (Next.js, Vite等)
-        FRONTEND_ACTUAL_PORT=$(grep -a "Local:" logs/frontend.log 2>/dev/null | grep -o "http://localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
-                             grep -a "using available port" logs/frontend.log 2>/dev/null | grep -o "using available port [0-9]*" | head -1 | grep -o "[0-9]*" || \
-                             grep -a "ready in" logs/frontend.log 2>/dev/null | grep -o "http://localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
-                             echo "")
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    if [ -z "$FRONTEND_ACTUAL_PORT" ]; then
-        # 如果从日志中找不到端口，尝试常用的前端端口
-        for port in 3000 3001 3002 3003 5173 5174; do
-            if curl -s -w "%{http_code}" -o /dev/null "http://localhost:$port" 2>/dev/null | grep -q "200"; then
-                FRONTEND_ACTUAL_PORT=$port
-                log_info "通过检测发现前端运行在端口: $FRONTEND_ACTUAL_PORT"
-                break
-            fi
-        done
-    fi
-
-    if [ -z "$FRONTEND_ACTUAL_PORT" ]; then
-        FRONTEND_ACTUAL_PORT=5173
-        log_warning "无法确定前端端口，使用默认端口: $FRONTEND_ACTUAL_PORT"
+    # 使用之前检测到的端口，如果没有则重新检测
+    if [ -n "$DETECTED_PORT" ]; then
+        FRONTEND_ACTUAL_PORT=$DETECTED_PORT
+        log_success "使用已检测到的前端端口: $FRONTEND_ACTUAL_PORT"
     else
-        log_success "检测到前端端口: $FRONTEND_ACTUAL_PORT"
+        # 重新检测前端端口
+        FRONTEND_ACTUAL_PORT=""
+        log_info "重新检测前端服务端口..."
+        
+        # 先从日志检测
+        if [ -f "logs/frontend.log" ]; then
+            FRONTEND_ACTUAL_PORT=$(grep -a "Local:" logs/frontend.log 2>/dev/null | grep -o "http://localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                                 grep -a "Local:" logs/frontend.log 2>/dev/null | grep -o "localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                                 grep -a "ready - started server" logs/frontend.log 2>/dev/null | grep -o ":[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                                 grep -a "running at" logs/frontend.log 2>/dev/null | grep -o "localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                                 echo "")
+        fi
+
+        if [ -z "$FRONTEND_ACTUAL_PORT" ]; then
+            # 如果从日志中找不到端口，尝试常用的前端端口
+            log_info "从日志中未检测到端口，尝试检测常用端口..."
+            for port in 3000 5173 3001 3002 3003 5174; do
+                if curl --noproxy localhost -s -w "%{http_code}" -o /dev/null "http://localhost:$port" 2>/dev/null | grep -q "200"; then
+                    FRONTEND_ACTUAL_PORT=$port
+                    log_success "通过端口检测发现前端运行在端口: $FRONTEND_ACTUAL_PORT"
+                    break
+                fi
+            done
+        fi
+
+        if [ -z "$FRONTEND_ACTUAL_PORT" ]; then
+            FRONTEND_ACTUAL_PORT=3000
+            log_warning "无法确定前端端口，使用默认端口: $FRONTEND_ACTUAL_PORT"
+        else
+            log_success "检测到前端端口: $FRONTEND_ACTUAL_PORT"
+        fi
     fi
 
     # 验证两个服务都正常响应
     log_info "🔍 验证服务状态..."
 
     # 检查后端服务
-    BACKEND_STATUS=$(curl -s -w "%{http_code}" -o /dev/null "http://localhost:8000/health" 2>/dev/null || echo "000")
+    BACKEND_STATUS=$(curl --noproxy localhost -s -w "%{http_code}" -o /dev/null "http://localhost:8000/health" 2>/dev/null || echo "000")
     # 检查前端服务
-    FRONTEND_STATUS=$(curl -s -w "%{http_code}" -o /dev/null "http://localhost:$FRONTEND_ACTUAL_PORT" 2>/dev/null || echo "000")
+    FRONTEND_STATUS=$(curl --noproxy localhost -s -w "%{http_code}" -o /dev/null "http://localhost:$FRONTEND_ACTUAL_PORT" 2>/dev/null || echo "000")
 
     if [ "$BACKEND_STATUS" = "200" ] && [ "$FRONTEND_STATUS" = "200" ]; then
         # 优雅的成功通知
@@ -439,12 +496,17 @@ start_dev() {
     else
         echo ""
         log_warning "服务启动可能存在问题，请检查日志："
-        echo -e "   ${GRAY}•${NC} 后端状态码: $BACKEND_STATUS"
-        echo -e "   ${GRAY}•${NC} 前端状态码: $FRONTEND_STATUS"
+        echo -e "   ${GRAY}•${NC} 后端状态码: $BACKEND_STATUS (期望: 200)"
+        echo -e "   ${GRAY}•${NC} 前端状态码: $FRONTEND_STATUS (期望: 200)"
+        echo ""
+        echo -e "📱 ${BLUE}前端服务${NC}:   ${YELLOW}http://localhost:$FRONTEND_ACTUAL_PORT${NC}"
+        echo -e "🔧 ${BLUE}后端服务${NC}:   ${YELLOW}http://localhost:8000${NC}"
         echo ""
         echo -e "📝 ${BLUE}日志文件${NC}:"
         echo -e "   ${GRAY}•${NC} 后端: logs/backend.log"
         echo -e "   ${GRAY}•${NC} 前端: logs/frontend.log"
+        echo ""
+        echo -e "💡 ${BLUE}提示${NC}: 即使状态检查失败，服务可能仍在启动中，请稍等片刻后访问上述地址"
         echo ""
     fi
 }
@@ -478,10 +540,15 @@ start_prod() {
             exit 1
         fi
   
-        wait_for_service "http://localhost:3000" "生产服务"
+        if wait_for_service "http://localhost:3000" "生产服务"; then
+            log_success "生产服务健康检查通过"
+        else
+            log_warning "生产服务健康检查失败，但继续执行状态验证"
+            log_warning "请检查生产服务日志: logs/production.log"
+        fi
 
         # 验证生产服务
-        PROD_STATUS=$(curl -s -w "%{http_code}" -o /dev/null "http://localhost:3000" 2>/dev/null || echo "000")
+        PROD_STATUS=$(curl --noproxy localhost -s -w "%{http_code}" -o /dev/null "http://localhost:3000" 2>/dev/null || echo "000")
 
         if [ "$PROD_STATUS" = "200" ]; then
             echo ""
@@ -538,11 +605,40 @@ stop_services() {
         if kill -0 $FRONTEND_PID 2>/dev/null; then
             kill $FRONTEND_PID
             log_success "前端服务已停止 (PID: $FRONTEND_PID)"
+            # 等待进程完全退出
+            sleep 2
         else
             log_warning "前端进程 $FRONTEND_PID 不存在，清理陈旧的PID文件"
         fi
         rm -f logs/frontend.pid
     fi
+
+    # 强制清理所有占用常用前端端口的进程
+    for port in 3000 5173 3001 3002; do
+        local port_pids=$(lsof -ti:$port 2>/dev/null || true)
+        if [ ! -z "$port_pids" ]; then
+            log_info "发现占用端口$port的进程: $port_pids"
+            for pid in $port_pids; do
+                if kill -0 $pid 2>/dev/null; then
+                    # 先尝试正常停止
+                    kill $pid 2>/dev/null || true
+                    log_info "已发送停止信号给进程 $pid (端口 $port)"
+                fi
+            done
+            
+            # 等待进程退出
+            sleep 2
+            
+            # 检查是否还有进程占用端口，如果有则强制杀死
+            local remaining_pids=$(lsof -ti:$port 2>/dev/null || true)
+            if [ ! -z "$remaining_pids" ]; then
+                log_warning "强制停止残留进程: $remaining_pids (端口 $port)"
+                for pid in $remaining_pids; do
+                    kill -9 $pid 2>/dev/null || true
+                done
+            fi
+        fi
+    done
 
     # 停止生产服务
     if [ -f "logs/production.pid" ]; then
