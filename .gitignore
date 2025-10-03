@@ -145,3 +145,6 @@ static/uploads/
 test-results/
 playwright-report/
 test-results/
+
+# Claude AI
+.claude/
