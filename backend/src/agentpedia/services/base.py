@@ -35,7 +35,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
             self.model.id == id,
             self.model.deleted_at.is_(None)
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return result.scalar_one_or_none()
     
     async def get_multi(
@@ -59,7 +59,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
             .limit(limit)
             .order_by(self.model.created_at.desc())
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return list(result.scalars())
     
     async def create(self, obj_in: CreateSchemaType) -> ModelType:
@@ -102,7 +102,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         """硬删除对象"""
         db_obj = await self.get(id)
         if db_obj:
-            await self.db.delete(db_obj)
+            self.db.delete(db_obj)
             await self.db.commit()
             return True
         return False
@@ -117,7 +117,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                 conditions.append(getattr(self.model, key) == value)
         
         stmt = select(func.count(self.model.id)).where(and_(*conditions))
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return result.scalar()
     
     async def exists(self, id: Any) -> bool:
@@ -138,7 +138,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                 conditions.append(getattr(self.model, key) == value)
         
         stmt = select(self.model).where(and_(*conditions))
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         obj = result.scalar_one_or_none()
         
         if obj:

@@ -86,7 +86,7 @@ class UserService(BaseService[User, UserCreate, UserUpdate]):
             or_(User.username == username, User.email == email),
             User.deleted_at.is_(None)
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return result.scalar_one_or_none()
     
     async def get_by_username(self, username: str) -> Optional[User]:
@@ -95,7 +95,7 @@ class UserService(BaseService[User, UserCreate, UserUpdate]):
             User.username == username,
             User.deleted_at.is_(None)
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return result.scalar_one_or_none()
     
     async def get_by_email(self, email: str) -> Optional[User]:
@@ -104,7 +104,7 @@ class UserService(BaseService[User, UserCreate, UserUpdate]):
             User.email == email,
             User.deleted_at.is_(None)
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return result.scalar_one_or_none()
     
     async def update_user(self, user_id: int, user_data: UserUpdate) -> Optional[User]:
@@ -265,7 +265,7 @@ class UserService(BaseService[User, UserCreate, UserUpdate]):
             .limit(pagination.size)
             .order_by(User.created_at.desc())
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         users = list(result.scalars())
         
         return users, total

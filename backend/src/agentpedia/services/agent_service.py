@@ -25,7 +25,9 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
     async def create_agent(self, agent_data: AgentCreate, owner_id: int) -> Agent:
         """创建Agent"""
         # 检查名称是否已存在（同一用户下）
+        print(f"DEBUG: About to call get_by_name_and_owner with name={agent_data.name}, owner_id={owner_id}")
         existing_agent = await self.get_by_name_and_owner(agent_data.name, owner_id)
+        print(f"DEBUG: get_by_name_and_owner returned: {existing_agent}")
         if existing_agent:
             raise ValueError("Agent名称已存在")
         
@@ -61,7 +63,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         await self.db.refresh(agent)
         
         # 添加工具关联
-        if agent_data.tools:
+        if agent_data.tools and len(agent_data.tools) > 0:
             await self.add_tools_to_agent(agent.id, agent_data.tools)
         
         return agent
@@ -73,7 +75,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
             Agent.owner_id == owner_id,
             Agent.deleted_at.is_(None)
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return result.scalar_one_or_none()
     
     async def get_with_tools(self, agent_id: int) -> Optional[Agent]:
@@ -86,7 +88,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 Agent.deleted_at.is_(None)
             )
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         return result.scalar_one_or_none()
     
     async def update_agent(self, agent_id: int, agent_data: AgentUpdate, user_id: int) -> Optional[Agent]:
@@ -245,7 +247,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 .limit(pagination.size)
                 .order_by(Agent.created_at.desc())
             )
-            result = await self.db.execute(stmt)
+            result = self.db.execute(stmt)
             agents = list(result.scalars())
         except Exception as e:
             print(f"Error querying agents: {e}")
@@ -287,11 +289,11 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
     async def remove_all_tools_from_agent(self, agent_id: int) -> bool:
         """移除Agent的所有工具"""
         stmt = select(AgentTool).where(AgentTool.agent_id == agent_id)
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         agent_tools = list(result.scalars())
         
         for agent_tool in agent_tools:
-            await self.db.delete(agent_tool)
+            self.db.delete(agent_tool)
         
         await self.db.commit()
         return True
@@ -302,7 +304,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
             AgentTool.agent_id == agent_id,
             AgentTool.tool_name == tool_name
         )
-        result = await self.db.execute(stmt)
+        result = self.db.execute(stmt)
         agent_tool = result.scalar_one_or_none()
         
         if agent_tool:

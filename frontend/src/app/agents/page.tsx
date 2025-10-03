@@ -224,18 +224,18 @@ export default function AgentsPage() {
                         <div className="flex items-center justify-between text-sm text-text-secondary dark:text-text-secondary-dark">
                           <div className="flex items-center space-x-1">
                             <Star className="h-4 w-4 text-yellow-500 fill-current" />
-                            <span>{agent.statistics.average_rating.toFixed(1)}</span>
-                            <span className="text-xs">({agent.statistics.total_ratings})</span>
+                            <span>{agent.statistics?.average_rating?.toFixed(1) || '0.0'}</span>
+                            <span className="text-xs">({agent.statistics?.total_ratings || 0})</span>
                           </div>
                           <div className="flex items-center space-x-1">
                             <Users className="h-4 w-4" />
-                            <span>{agent.statistics.total_conversations}</span>
+                            <span>{agent.statistics?.total_conversations || 0}</span>
                           </div>
                         </div>
 
                         {/* Model Info */}
                         <div className="text-xs text-text-secondary dark:text-text-secondary-dark">
-                          <p>模型: {agent.model_config.model_name}</p>
+                          <p>模型: {agent.model_config?.model_name || (agent as any).model_name || '未知'}</p>
                           <p>创建者: {agent.owner?.username || '未知'}</p>
                         </div>
                       </CardContent>

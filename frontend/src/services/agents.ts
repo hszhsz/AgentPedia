@@ -57,6 +57,11 @@ export class AgentService {
     return apiClient.get(`/agents/${id}`);
   }
 
+  // 获取Agent详情 (by ID)
+  async getAgentById(id: number): Promise<ApiResponse<Agent>> {
+    return apiClient.get(`/agents/${id}`);
+  }
+
   // 创建Agent
   async createAgent(data: AgentCreateData): Promise<ApiResponse<Agent>> {
     return apiClient.post('/agents', data);

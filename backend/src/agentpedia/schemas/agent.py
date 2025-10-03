@@ -15,7 +15,7 @@ class AgentBase(BaseSchema):
     
     name: str = Field(..., description="Agent名称", min_length=1, max_length=100)
     description: Optional[str] = Field(None, description="Agent描述", max_length=1000)
-    type: AgentType = Field(AgentType.CHAT, description="Agent类型")
+    type: AgentType = Field(AgentType.CHATBOT, description="Agent类型")
     visibility: AgentVisibility = Field(AgentVisibility.PRIVATE, description="可见性")
     
     # 模型配置

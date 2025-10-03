@@ -170,7 +170,7 @@ class APIKeyService(BaseService[APIKey, APIKeyCreate, APIKeyUpdate]):
         """删除API密钥"""
         api_key = await self.get_api_key_by_id(key_id, user_id)
         
-        await self.db.delete(api_key)
+        self.db.delete(api_key)
         await self.db.commit()
         
         return True

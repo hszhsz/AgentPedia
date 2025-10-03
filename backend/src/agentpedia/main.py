@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
                     mock = User(
                         username="mock_admin",
                         email="mock@example.com",
-                        hashed_password=get_password_hash("mockpass"),
+                        hashed_password=get_password_hash("mockpass"[:72]),
                         role=UserRole.ADMIN,
                         status=UserStatus.ACTIVE,
                         full_name="Mock Admin",

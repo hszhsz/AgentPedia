@@ -157,15 +157,6 @@ class Settings(BaseSettings):
         case_sensitive = True
 
 
-# 创建全局配置实例
-settings = Settings()
-
-
-def get_settings() -> Settings:
-    """获取配置实例"""
-    return settings
-
-
 # 环境特定配置
 class DevelopmentSettings(Settings):
     """开发环境配置"""
@@ -198,10 +189,19 @@ def get_settings_by_env(env: str = None) -> Settings:
     """根据环境获取配置"""
     if env is None:
         env = os.getenv("ENVIRONMENT", "development")
-    
+
     if env == "production":
         return ProductionSettings()
     elif env == "testing":
         return TestingSettings()
     else:
         return DevelopmentSettings()
+
+
+# 创建全局配置实例
+settings = get_settings_by_env()
+
+
+def get_settings() -> Settings:
+    """获取配置实例"""
+    return settings
