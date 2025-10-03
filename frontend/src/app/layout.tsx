@@ -4,6 +4,7 @@ import './globals.css'
 import { ThemeProvider } from '@/components/providers/theme-provider'
 import { QueryProvider } from '@/components/providers/query-provider'
 import { IntlProvider } from '@/components/providers/intl-provider'
+import { AuthProviderClient } from '@/components/providers/auth-provider-client'
 import { Header, Footer } from '@/components/layout'
 
 const inter = Inter({ subsets: ['latin'] })
@@ -41,13 +42,15 @@ export default function RootLayout({
         <ThemeProvider>
           <QueryProvider>
             <IntlProvider>
-              <div className="min-h-screen flex flex-col">
-                <Header />
-                <main className="flex-1">
-                  {children}
-                </main>
-                <Footer />
-              </div>
+              <AuthProviderClient>
+                <div className="min-h-screen flex flex-col">
+                  <Header />
+                  <main className="flex-1">
+                    {children}
+                  </main>
+                  <Footer />
+                </div>
+              </AuthProviderClient>
             </IntlProvider>
           </QueryProvider>
         </ThemeProvider>

@@ -1,3 +1,5 @@
+'use client'
+
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { User, TokenResponse } from '../types';
