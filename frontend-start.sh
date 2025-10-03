@@ -109,25 +109,61 @@ install_dependencies() {
 
 # 停止前端服务
 stop_frontend_service() {
+    log_info "正在停止前端服务..."
+
+    # 1. 通过PID文件停止服务
     if [ -f "logs/frontend.pid" ]; then
         FRONTEND_PID=$(cat logs/frontend.pid)
         if kill -0 $FRONTEND_PID 2>/dev/null; then
             kill $FRONTEND_PID
             log_success "前端服务已停止 (PID: $FRONTEND_PID)"
+            # 等待进程完全退出
+            sleep 2
         else
             log_warning "前端进程 $FRONTEND_PID 不存在"
         fi
         rm -f logs/frontend.pid
-    else
-        # 尝试通过端口杀死进程
-        FRONTEND_PIDS=$(lsof -ti:3000 2>/dev/null || true)
-        if [ ! -z "$FRONTEND_PIDS" ]; then
-            for pid in $FRONTEND_PIDS; do
-                kill $pid 2>/dev/null || true
-            done
-            log_success "已停止占用端口3000的进程"
-        fi
     fi
+
+    # 2. 强制清理所有占用端口3000的进程
+    local port_pids=$(lsof -ti:3000 2>/dev/null || true)
+    if [ ! -z "$port_pids" ]; then
+        log_info "发现占用端口3000的进程: $port_pids"
+        for pid in $port_pids; do
+            if kill -0 $pid 2>/dev/null; then
+                # 先尝试正常停止
+                kill $pid 2>/dev/null || true
+                log_info "已发送停止信号给进程 $pid"
+            fi
+        done
+
+        # 等待进程退出
+        sleep 3
+
+        # 检查是否还有进程占用端口，如果有则强制杀死
+        local remaining_pids=$(lsof -ti:3000 2>/dev/null || true)
+        if [ ! -z "$remaining_pids" ]; then
+            log_warning "强制停止残留进程: $remaining_pids"
+            for pid in $remaining_pids; do
+                kill -9 $pid 2>/dev/null || true
+            done
+            sleep 1
+        fi
+
+        log_success "已清理所有占用端口3000的进程"
+    fi
+
+    # 3. 清理相关的npm和node进程
+    local npm_pids=$(ps aux | grep "npm run dev" | grep -v grep | awk '{print $2}' | xargs 2>/dev/null || true)
+    if [ ! -z "$npm_pids" ]; then
+        log_info "清理相关npm进程: $npm_pids"
+        for pid in $npm_pids; do
+            kill $pid 2>/dev/null || true
+        done
+        sleep 1
+    fi
+
+    log_success "前端服务清理完成"
 }
 
 # 检查服务状态
@@ -161,6 +197,17 @@ check_status() {
 # 主函数
 main() {
     local command=${1:-start}
+    local force_mode=false
+
+    # 检查是否是--force参数
+    if [ "$command" = "--force" ]; then
+        force_mode=true
+        command="start"
+        log_info "🔥 强制启动模式已启用"
+    elif [ "$2" = "--force" ]; then
+        force_mode=true
+        log_info "🔥 强制启动模式已启用"
+    fi
 
     case $command in
         "start")
@@ -173,14 +220,23 @@ main() {
             setup_directories
             install_dependencies
 
-            # 检查端口是否可用
-            if ! check_port 3000; then
-                log_error "端口3000被占用，请先停止占用该端口的服务"
-                exit 1
+            # 先停止可能存在的旧服务
+            if [ "$force_mode" = true ]; then
+                log_info "强制模式：清理所有相关进程..."
+                stop_frontend_service
+            else
+                # 非强制模式下，先检查端口
+                if ! check_port 3000; then
+                    log_warning "端口3000被占用，正在尝试清理..."
+                    stop_frontend_service
+                fi
             fi
 
-            # 停止可能存在的旧服务
-            stop_frontend_service
+            # 再次检查端口是否可用
+            if ! check_port 3000; then
+                log_error "端口3000仍被占用，请手动清理或使用 --force 参数强制启动"
+                exit 1
+            fi
 
             # 启动前端服务
             log_info "启动前端服务..."
@@ -239,7 +295,7 @@ main() {
             log_error "未知命令: $command"
             echo ""
             echo "用法:"
-            echo "  ./frontend-start.sh [命令]"
+            echo "  ./frontend-start.sh [命令] [--force]"
             echo ""
             echo "命令:"
             echo "  start    启动前端服务 (默认)"
@@ -247,6 +303,14 @@ main() {
             echo "  restart  重启前端服务"
             echo "  logs     查看日志"
             echo "  status   查看服务状态"
+            echo ""
+            echo "参数:"
+            echo "  --force  强制启动，自动清理占用的端口"
+            echo ""
+            echo "示例:"
+            echo "  ./frontend-start.sh start      # 正常启动"
+            echo "  ./frontend-start.sh start --force  # 强制启动"
+            echo "  ./frontend-start.sh --force    # 强制启动（简写）"
             echo ""
             exit 1
             ;;
