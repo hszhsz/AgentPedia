@@ -53,21 +53,36 @@ wait_for_service() {
     local service_name=$2
     local max_attempts=30
     local attempt=1
-    
+
     log_info "等待 $service_name 启动..."
-    
+
     while [ $attempt -le $max_attempts ]; do
-        if curl -s $url > /dev/null 2>&1; then
+        # 尝试连接服务并检查HTTP状态码
+        response=$(curl -s -w "%{http_code}" -o /dev/null "$url" 2>/dev/null)
+        curl_exit_code=$?
+
+        if [ $curl_exit_code -eq 0 ] && [ "$response" = "200" ]; then
             log_success "$service_name 启动成功"
             return 0
         fi
-        
+
         echo -n "."
+        if [ $attempt -eq 1 ]; then
+            echo ""
+            log_info "正在检查 $service_name (URL: $url)..."
+        fi
+
         sleep 2
         attempt=$((attempt + 1))
     done
-    
-    log_error "$service_name 启动失败"
+
+    echo ""
+    log_error "$service_name 启动失败 (尝试了 $max_attempts 次)"
+    if [ $curl_exit_code -ne 0 ]; then
+        log_error "连接错误: curl 退出码 $curl_exit_code"
+    else
+        log_error "HTTP错误: 状态码 $response"
+    fi
     return 1
 }
 
@@ -251,9 +266,17 @@ start_dev() {
         exit 1
     fi
 
-    if ! check_port 5173; then
-        log_error "前端端口 5173 被占用，请释放端口后重试"
-        exit 1
+    # 检查常用的前端端口
+    FRONTEND_PORT_CHECK=true
+    for port in 5173 3000 3001 3002; do
+        if check_port $port; then
+            FRONTEND_PORT_CHECK=false
+            break
+        fi
+    done
+
+    if [ "$FRONTEND_PORT_CHECK" = true ]; then
+        log_warning "常用前端端口 (3000, 3001, 3002, 5173) 都被占用，前端服务可能会自动选择其他端口"
     fi
 
     # 启动Docker依赖服务
@@ -283,6 +306,14 @@ start_dev() {
             fi
         fi
 
+        # 清理占用8000端口的进程
+        log_info "清理占用后端端口的进程..."
+        PORT_PIDS=$(lsof -ti :8000 2>/dev/null || true)
+        if [ -n "$PORT_PIDS" ]; then
+            echo $PORT_PIDS | xargs kill -9 2>/dev/null || true
+            sleep 2
+        fi
+
         # 启动后端服务并获取PID
         cd backend
         nohup uv run python src/agentpedia/main.py > ../logs/backend.log 2>&1 &
@@ -306,7 +337,7 @@ start_dev() {
         fi
         
         # 等待后端服务启动
-        wait_for_service "http://localhost:8000/docs" "后端服务"
+        wait_for_service "http://localhost:8000/health" "后端服务"
     else
         log_warning "未找到 backend/src/agentpedia/main.py，跳过后端服务启动"
     fi
@@ -329,22 +360,93 @@ start_dev() {
         fi
         
         # 等待前端服务启动
-        wait_for_service "http://localhost:5173" "前端服务"
+        # 等待一下让前端服务确定使用的端口
+        sleep 3
+        # 从日志中获取实际使用的端口
+        FRONTEND_PORT=$(grep -o "Local:.*http://localhost:[0-9]*" ../logs/frontend.log | head -1 | grep -o "[0-9]*" || echo "5173")
+        if [ -z "$FRONTEND_PORT" ]; then
+            FRONTEND_PORT=5173
+        fi
+        log_info "前端服务运行在端口: $FRONTEND_PORT"
+        wait_for_service "http://localhost:$FRONTEND_PORT" "前端服务"
     else
         log_warning "未找到 frontend/package.json，跳过前端服务启动"
     fi
     
-    log_success "✅ 开发环境启动完成！"
-    echo ""
-    echo "📱 前端地址: http://localhost:5173"
-    echo "🔧 后端地址: http://localhost:8000"
-    echo "📋 API文档: http://localhost:8000/docs"
-    echo ""
-    echo "📝 日志文件:"
-    echo "   后端: logs/backend.log"
-    echo "   前端: logs/frontend.log"
-    echo ""
-    echo "🛑 停止服务: ./bootstrap.sh stop"
+    # 获取实际的前端端口
+    FRONTEND_ACTUAL_PORT=""
+    MAX_WAIT=20
+    WAIT_COUNT=0
+
+    log_info "检测前端服务端口..."
+    while [ $WAIT_COUNT -lt $MAX_WAIT ] && [ -z "$FRONTEND_ACTUAL_PORT" ]; do
+        sleep 1
+        # 检查多种可能的端口格式 (Next.js, Vite等)
+        FRONTEND_ACTUAL_PORT=$(grep -a "Local:" logs/frontend.log 2>/dev/null | grep -o "http://localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                             grep -a "using available port" logs/frontend.log 2>/dev/null | grep -o "using available port [0-9]*" | head -1 | grep -o "[0-9]*" || \
+                             grep -a "ready in" logs/frontend.log 2>/dev/null | grep -o "http://localhost:[0-9]*" | head -1 | grep -o "[0-9]*" || \
+                             echo "")
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    if [ -z "$FRONTEND_ACTUAL_PORT" ]; then
+        # 如果从日志中找不到端口，尝试常用的前端端口
+        for port in 3000 3001 3002 3003 5173 5174; do
+            if curl -s -w "%{http_code}" -o /dev/null "http://localhost:$port" 2>/dev/null | grep -q "200"; then
+                FRONTEND_ACTUAL_PORT=$port
+                log_info "通过检测发现前端运行在端口: $FRONTEND_ACTUAL_PORT"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$FRONTEND_ACTUAL_PORT" ]; then
+        FRONTEND_ACTUAL_PORT=5173
+        log_warning "无法确定前端端口，使用默认端口: $FRONTEND_ACTUAL_PORT"
+    else
+        log_success "检测到前端端口: $FRONTEND_ACTUAL_PORT"
+    fi
+
+    # 验证两个服务都正常响应
+    log_info "🔍 验证服务状态..."
+
+    # 检查后端服务
+    BACKEND_STATUS=$(curl -s -w "%{http_code}" -o /dev/null "http://localhost:8000/health" 2>/dev/null || echo "000")
+    # 检查前端服务
+    FRONTEND_STATUS=$(curl -s -w "%{http_code}" -o /dev/null "http://localhost:$FRONTEND_ACTUAL_PORT" 2>/dev/null || echo "000")
+
+    if [ "$BACKEND_STATUS" = "200" ] && [ "$FRONTEND_STATUS" = "200" ]; then
+        # 优雅的成功通知
+        echo ""
+        echo -e "${GREEN}🎉 启动成功！${NC}"
+        echo -e "${GREEN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║${NC}                           🚀 AgentPedia 启动成功！                           ${GREEN}║${NC}"
+        echo -e "${GREEN}║${NC}                    前端:${FRONTEND_ACTUAL_PORT}  |  后端:8000                    ${GREEN}║${NC}"
+        echo -e "${GREEN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "📱 ${BLUE}前端服务${NC}:   ${YELLOW}http://localhost:$FRONTEND_ACTUAL_PORT${NC}"
+        echo -e "🔧 ${BLUE}后端服务${NC}:   ${YELLOW}http://localhost:8000${NC}"
+        echo -e "📋 ${BLUE}API 文档${NC}:  ${YELLOW}http://localhost:8000/api/v1/docs${NC}"
+        echo ""
+        echo -e "${GREEN}✨ 所有服务已成功启动并运行在指定端口上！${NC}"
+        echo ""
+        echo -e "📝 ${BLUE}日志文件${NC}:"
+        echo -e "   ${GRAY}•${NC} 后端: logs/backend.log"
+        echo -e "   ${GRAY}•${NC} 前端: logs/frontend.log"
+        echo ""
+        echo -e "🛑 ${BLUE}停止服务${NC}: ${YELLOW}./bootstrap.sh stop${NC}"
+        echo ""
+    else
+        echo ""
+        log_warning "服务启动可能存在问题，请检查日志："
+        echo -e "   ${GRAY}•${NC} 后端状态码: $BACKEND_STATUS"
+        echo -e "   ${GRAY}•${NC} 前端状态码: $FRONTEND_STATUS"
+        echo ""
+        echo -e "📝 ${BLUE}日志文件${NC}:"
+        echo -e "   ${GRAY}•${NC} 后端: logs/backend.log"
+        echo -e "   ${GRAY}•${NC} 前端: logs/frontend.log"
+        echo ""
+    fi
 }
 
 # 启动生产环境
@@ -375,14 +477,32 @@ start_prod() {
             log_error "无法写入生产PID文件"
             exit 1
         fi
-        
+  
         wait_for_service "http://localhost:3000" "生产服务"
+
+        # 验证生产服务
+        PROD_STATUS=$(curl -s -w "%{http_code}" -o /dev/null "http://localhost:3000" 2>/dev/null || echo "000")
+
+        if [ "$PROD_STATUS" = "200" ]; then
+            echo ""
+            echo -e "${GREEN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+            echo -e "${GREEN}║${NC}                      🌟 生产环境启动成功！                            ${GREEN}║${NC}"
+            echo -e "${GREEN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+            echo ""
+            echo -e "${BLUE}🌐 应用地址${NC}:   ${YELLOW}http://localhost:3000${NC}"
+            echo -e "${BLUE}📝 日志文件${NC}:   ${YELLOW}logs/production.log${NC}"
+            echo ""
+            echo -e "${GREEN}✨ 生产环境已成功部署并运行！${NC}"
+            echo ""
+        else
+            echo ""
+            log_warning "生产环境启动可能存在问题，状态码: $PROD_STATUS"
+            echo -e "📝 ${BLUE}日志文件${NC}: logs/production.log"
+            echo ""
+        fi
+    else
+        log_warning "未找到前端构建文件，跳过生产服务启动"
     fi
-    
-    log_success "✅ 生产环境启动完成！"
-    echo ""
-    echo "🌐 应用地址: http://localhost:3000"
-    echo "📝 日志文件: logs/production.log"
 }
 
 # 运行测试环境
