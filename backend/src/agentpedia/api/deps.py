@@ -30,7 +30,7 @@ async def get_current_user(
             id=1,
             username="mock_admin",
             email="mock@example.com",
-            hashed_password=get_password_hash("mockpass"),
+            hashed_password="$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewxBobJOiZLWLH/K",  # pre-hashed "mockpass"
             role=UserRole.ADMIN,
             status=UserStatus.ACTIVE,
         )
@@ -103,7 +103,7 @@ async def get_optional_current_user(
             id=1,
             username="mock_admin",
             email="mock@example.com",
-            hashed_password=get_password_hash("mockpass"),
+            hashed_password="$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewxBobJOiZLWLH/K",  # pre-hashed "mockpass"
             role=UserRole.ADMIN,
             status=UserStatus.ACTIVE,
         )

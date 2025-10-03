@@ -46,14 +46,34 @@ async def list_agents(
         agents, total = await agent_service.get_agents_with_filters(
             pagination, filters, user_id
         )
-        
-        return PaginatedResponse(
-            items=[AgentResponse.model_validate(agent) for agent in agents],
-            total=total,
-            page=pagination.page,
-            size=pagination.size,
-            pages=(total + pagination.size - 1) // pagination.size
-        )
+
+        try:
+            response_data = []
+            for agent in agents:
+                try:
+                    response_data.append(AgentResponse.model_validate(agent))
+                except Exception as e:
+                    logger.error(f"Error validating agent {agent.id}: {e}")
+                    continue
+
+            return PaginatedResponse.create(
+                items=response_data,
+                total=total,
+                page=pagination.page,
+                size=pagination.size
+            )
+        except Exception as e:
+            logger.error(f"Error creating paginated response: {e}")
+            # Return a simple response
+            return {
+                "items": [],
+                "total": 0,
+                "page": pagination.page,
+                "size": pagination.size,
+                "pages": 0,
+                "has_next": False,
+                "has_prev": False
+            }
     
     except Exception as e:
         logger.error(
@@ -121,12 +141,11 @@ async def list_my_agents(
             current_user.id, pagination, filters
         )
         
-        return PaginatedResponse(
+        return PaginatedResponse.create(
             items=[AgentResponse.model_validate(agent) for agent in agents],
             total=total,
             page=pagination.page,
-            size=pagination.size,
-            pages=(total + pagination.size - 1) // pagination.size
+            size=pagination.size
         )
     
     except Exception as e:

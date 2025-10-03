@@ -15,7 +15,7 @@ class AgentBase(BaseSchema):
     
     name: str = Field(..., description="Agent名称", min_length=1, max_length=100)
     description: Optional[str] = Field(None, description="Agent描述", max_length=1000)
-    type: AgentType = Field(AgentType.CHATBOT, description="Agent类型")
+    type: AgentType = Field(AgentType.CHAT, description="Agent类型")
     visibility: AgentVisibility = Field(AgentVisibility.PRIVATE, description="可见性")
     
     # 模型配置
@@ -39,8 +39,10 @@ class AgentBase(BaseSchema):
     
     # 限制配置
     max_conversation_length: int = Field(50, description="最大对话长度", ge=1, le=1000)
+    memory_window: int = Field(10, description="记忆窗口大小", ge=1, le=100)
     rate_limit_per_minute: int = Field(60, description="每分钟请求限制", ge=1, le=1000)
     rate_limit_per_hour: int = Field(1000, description="每小时请求限制", ge=1, le=10000)
+    rate_limit_per_day: int = Field(10000, description="每日请求限制", ge=1, le=100000)
     
     @validator("name")
     def validate_name(cls, v):
@@ -57,11 +59,17 @@ class AgentCreate(AgentBase):
 
 class AgentUpdate(BaseSchema):
     """更新Agent模式"""
-    
+
     name: Optional[str] = Field(None, description="Agent名称", min_length=1, max_length=100)
     description: Optional[str] = Field(None, description="Agent描述", max_length=1000)
+    type: Optional[AgentType] = Field(None, description="Agent类型")
     visibility: Optional[AgentVisibility] = Field(None, description="可见性")
-    
+
+    # 模型配置
+    model_provider: Optional[ModelProvider] = Field(None, description="模型提供商")
+    model_name: Optional[str] = Field(None, description="模型名称", max_length=100)
+    model_version: Optional[str] = Field(None, description="模型版本", max_length=50)
+
     # 配置参数
     system_prompt: Optional[str] = Field(None, description="系统提示词", max_length=5000)
     temperature: Optional[float] = Field(None, description="温度参数", ge=0.0, le=2.0)
@@ -69,31 +77,36 @@ class AgentUpdate(BaseSchema):
     top_p: Optional[float] = Field(None, description="Top-p参数", ge=0.0, le=1.0)
     frequency_penalty: Optional[float] = Field(None, description="频率惩罚", ge=-2.0, le=2.0)
     presence_penalty: Optional[float] = Field(None, description="存在惩罚", ge=-2.0, le=2.0)
-    
+
     # 功能配置
     enable_memory: Optional[bool] = Field(None, description="是否启用记忆")
     enable_tools: Optional[bool] = Field(None, description="是否启用工具")
     enable_web_search: Optional[bool] = Field(None, description="是否启用网络搜索")
     enable_code_execution: Optional[bool] = Field(None, description="是否启用代码执行")
-    
+
     # 限制配置
     max_conversation_length: Optional[int] = Field(None, description="最大对话长度", ge=1, le=1000)
+    memory_window: Optional[int] = Field(None, description="记忆窗口大小", ge=1, le=100)
     rate_limit_per_minute: Optional[int] = Field(None, description="每分钟请求限制", ge=1, le=1000)
     rate_limit_per_hour: Optional[int] = Field(None, description="每小时请求限制", ge=1, le=10000)
+    rate_limit_per_day: Optional[int] = Field(None, description="每日请求限制", ge=1, le=100000)
+
+    # 工具配置
+    tools: Optional[List[str]] = Field(None, description="工具列表")
 
 
 class AgentResponse(AgentBase, IDSchema, TimestampSchema):
     """Agent响应模式"""
-    
+
     status: AgentStatus = Field(..., description="Agent状态")
     owner_id: int = Field(..., description="所有者ID")
-    
+
     # 统计信息
-    usage_count: int = Field(..., description="使用次数")
-    total_tokens_used: int = Field(..., description="总token使用量")
-    average_response_time: float = Field(..., description="平均响应时间")
-    success_rate: float = Field(..., description="成功率")
-    
+    usage_count: int = Field(0, description="使用次数")
+    total_tokens_used: int = Field(0, description="总token使用量")
+    average_response_time: float = Field(0.0, description="平均响应时间")
+    success_rate: float = Field(100.0, description="成功率")
+
     # 时间信息
     published_at: Optional[datetime] = Field(None, description="发布时间")
     last_used_at: Optional[datetime] = Field(None, description="最后使用时间")

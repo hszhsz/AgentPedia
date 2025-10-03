@@ -227,21 +227,30 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
             conditions.append(Agent.created_at <= filters.created_before)
         
         # 查询总数
-        count_stmt = select(func.count(Agent.id)).where(and_(*conditions))
-        count_result = await self.db.execute(count_stmt)
-        total = count_result.scalar()
+        try:
+            count_stmt = select(func.count(Agent.id)).where(and_(*conditions))
+            count_result = await self.db.execute(count_stmt)
+            total = count_result.scalar() or 0
+        except Exception as e:
+            print(f"Error counting agents: {e}")
+            total = 0
         
         # 查询数据
-        stmt = (
-            select(Agent)
-            .where(and_(*conditions))
-            .offset(pagination.offset)
-            .limit(pagination.size)
-            .order_by(Agent.created_at.desc())
-        )
-        result = await self.db.execute(stmt)
-        agents = list(result.scalars())
-        
+        try:
+            stmt = (
+                select(Agent)
+                .options(selectinload(Agent.owner))
+                .where(and_(*conditions))
+                .offset(pagination.offset)
+                .limit(pagination.size)
+                .order_by(Agent.created_at.desc())
+            )
+            result = await self.db.execute(stmt)
+            agents = list(result.scalars())
+        except Exception as e:
+            print(f"Error querying agents: {e}")
+            agents = []
+
         return agents, total
     
     async def get_user_agents(
