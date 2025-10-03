@@ -127,6 +127,31 @@ run_tests() {
     fi
 }
 
+# 清理现有的AgentPedia容器
+cleanup_existing_containers() {
+    log_info "🧹 检查并清理现有的AgentPedia容器..."
+
+    local containers=("agentpedia-postgres" "agentpedia-redis" "agentpedia-mongodb" "agentpedia-elasticsearch")
+    local containers_removed=false
+
+    for container in "${containers[@]}"; do
+        if docker ps -a --format "table {{.Names}}" | grep -q "^${container}$"; then
+            log_info "发现现有容器 $container，正在清理..."
+            if docker ps --format "table {{.Names}}" | grep -q "^${container}$"; then
+                docker stop "$container" >/dev/null 2>&1 || log_warning "无法停止容器 $container"
+            fi
+            docker rm "$container" >/dev/null 2>&1 || log_warning "无法删除容器 $container"
+            containers_removed=true
+        fi
+    done
+
+    if [ "$containers_removed" = true ]; then
+        log_success "现有容器清理完成"
+    else
+        log_info "未发现冲突的容器"
+    fi
+}
+
 # 启动Docker依赖服务
 start_docker_services() {
     log_info "🐳 启动Docker依赖服务..."
@@ -143,6 +168,9 @@ start_docker_services() {
         start_local_services
         return
     fi
+
+    # 清理可能冲突的现有容器
+    cleanup_existing_containers
 
     # 启动基础服务
     log_info "启动PostgreSQL、Redis、MongoDB、Elasticsearch..."
@@ -243,17 +271,37 @@ start_dev() {
     # 启动后端服务
     if [ -f "backend/src/agentpedia/main.py" ]; then
         log_info "启动后端服务..."
-        cd backend && nohup uv run python src/agentpedia/main.py > ../logs/backend.log 2>&1 &
-        BACKEND_PID=$!
+        # 确保logs目录存在
+        mkdir -p logs
+
+        # 先停止可能存在的旧进程
+        if [ -f "logs/backend.pid" ]; then
+            OLD_PID=$(cat logs/backend.pid)
+            if ps -p $OLD_PID > /dev/null 2>&1; then
+                kill $OLD_PID 2>/dev/null || true
+                sleep 2
+            fi
+        fi
+
+        # 启动后端服务并获取PID
+        cd backend
+        nohup uv run python src/agentpedia/main.py > ../logs/backend.log 2>&1 &
         cd ..
 
-        # 确保logs目录存在并写入PID文件
-        mkdir -p logs
-        echo $BACKEND_PID > logs/backend.pid
-        if [ $? -eq 0 ]; then
-            log_success "后端服务启动中 (PID: $BACKEND_PID)"
+        # 等待进程启动并获取正确的PID
+        sleep 2
+        BACKEND_PID=$(pgrep -f "uv run python src/agentpedia/main.py" | head -1)
+
+        if [ -n "$BACKEND_PID" ]; then
+            echo $BACKEND_PID > logs/backend.pid
+            if [ $? -eq 0 ]; then
+                log_success "后端服务启动中 (PID: $BACKEND_PID)"
+            else
+                log_error "无法写入后端PID文件"
+                exit 1
+            fi
         else
-            log_error "无法写入后端PID文件"
+            log_error "无法获取后端服务PID"
             exit 1
         fi
         
