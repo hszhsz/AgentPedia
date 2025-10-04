@@ -106,6 +106,48 @@ export class AgentService {
   async importAgent(data: any): Promise<ApiResponse<Agent>> {
     return apiClient.post('/agents/import', data);
   }
+
+  // 获取Agent扩展详情（包含评论、分析数据等）
+  async getAgentDetailExtended(id: number): Promise<ApiResponse<any>> {
+    return apiClient.get(`/agents/${id}/detail`);
+  }
+
+  // 创建Agent评论
+  async createReview(agentId: number, data: {
+    rating: number;
+    title?: string;
+    content?: string;
+  }): Promise<ApiResponse<any>> {
+    return apiClient.post(`/agents/${agentId}/reviews`, data);
+  }
+
+  // 获取Agent评论列表
+  async getReviews(agentId: number, params?: {
+    limit?: number;
+    offset?: number;
+  }): Promise<ApiResponse<any[]>> {
+    return apiClient.get(`/agents/${agentId}/reviews`, params);
+  }
+
+  // 切换Agent收藏状态
+  async toggleFavorite(agentId: number, isFavorite: boolean): Promise<ApiResponse<any>> {
+    return apiClient.post(`/agents/${agentId}/favorite`, { is_favorite: isFavorite });
+  }
+
+  // 获取Agent分析数据
+  async getAnalytics(agentId: number, params?: {
+    period_type?: string;
+    limit?: number;
+  }): Promise<ApiResponse<any[]>> {
+    return apiClient.get(`/agents/${agentId}/analytics`, params);
+  }
+
+  // 获取Agent流量数据
+  async getTraffic(agentId: number, params?: {
+    days?: number;
+  }): Promise<ApiResponse<any[]>> {
+    return apiClient.get(`/agents/${agentId}/traffic`, params);
+  }
 }
 
 export const agentService = new AgentService();

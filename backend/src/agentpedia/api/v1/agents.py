@@ -25,7 +25,12 @@ from agentpedia.schemas.agent import (
     AgentImport,
     AgentChat,
     AgentChatResponse,
-    AgentFilterParams
+    AgentFilterParams,
+    ReviewCreate,
+    ReviewResponse,
+    AnalyticsData,
+    TrafficData,
+    RevenueData
 )
 from agentpedia.services.agent_service import AgentService
 
@@ -667,4 +672,406 @@ async def chat_with_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="对话失败"
+        )
+
+
+@router.get("/{agent_id}/detail", response_model=APIResponse[dict])
+async def get_agent_detail_extended(
+    agent_id: int,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """获取Agent扩展详情（包含评论、分析数据等）"""
+    try:
+        agent = await agent_service.get_agent_with_reviews(agent_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent不存在"
+            )
+
+        # 检查访问权限
+        if agent.visibility.value == "private" and (
+            not current_user or agent.owner_id != current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权限访问此Agent"
+            )
+
+        # 获取分析数据
+        analytics_data = await agent_service.get_agent_analytics(agent_id)
+        traffic_data = await agent_service.get_agent_traffic_data(agent_id)
+        reviews = await agent_service.get_agent_reviews(agent_id)
+
+        # 构建扩展响应数据
+        extended_data = {
+            "agent": AgentDetail.model_validate(agent),
+            "analytics": [AnalyticsData.model_validate(a) for a in analytics_data],
+            "traffic": [TrafficData.model_validate(t) for t in traffic_data],
+            "reviews": [
+                ReviewResponse(
+                    id=r.id,
+                    rating=r.rating,
+                    title=r.title,
+                    content=r.content,
+                    is_verified_purchase=r.is_verified_purchase,
+                    is_featured=r.is_featured,
+                    helpful_count=r.helpful_count,
+                    agent_id=r.agent_id,
+                    user_id=r.user_id,
+                    created_at=r.created_at,
+                    updated_at=r.updated_at,
+                    user_username=r.user.username if r.user else None,
+                    user_full_name=r.user.full_name if r.user else None
+                ) for r in reviews
+            ],
+            "pricing_plans": agent.get_pricing_plans(),
+            "tags": agent.get_tags_list()
+        }
+
+        return APIResponse(
+            success=True,
+            data=extended_data,
+            message="获取Agent扩展详情成功"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Get agent extended detail failed",
+            error=str(e),
+            agent_id=agent_id,
+            user_id=current_user.id if current_user else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取Agent扩展详情失败"
+        )
+
+
+@router.post("/{agent_id}/reviews", response_model=APIResponse[ReviewResponse])
+async def create_review(
+    agent_id: int,
+    review_data: ReviewCreate,
+    current_user: User = Depends(get_current_active_user),
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """创建Agent评论"""
+    try:
+        # 检查Agent是否存在
+        agent = await agent_service.get(agent_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent不存在"
+            )
+
+        # 检查访问权限
+        if agent.visibility.value == "private" and agent.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权限评论此Agent"
+            )
+
+        success = await agent_service.add_review(
+            agent_id=agent_id,
+            user_id=current_user.id,
+            rating=review_data.rating,
+            title=review_data.title,
+            content=review_data.content
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="评论创建失败"
+            )
+
+        logger.info(
+            "Review created successfully",
+            agent_id=agent_id,
+            user_id=current_user.id,
+            rating=review_data.rating
+        )
+
+        # 获取创建的评论
+        reviews = await agent_service.get_agent_reviews(agent_id, limit=1)
+        if reviews:
+            review = reviews[0]
+            review_response = ReviewResponse(
+                id=review.id,
+                rating=review.rating,
+                title=review.title,
+                content=review.content,
+                is_verified_purchase=review.is_verified_purchase,
+                is_featured=review.is_featured,
+                helpful_count=review.helpful_count,
+                agent_id=review.agent_id,
+                user_id=review.user_id,
+                created_at=review.created_at,
+                updated_at=review.updated_at,
+                user_username=review.user.username if review.user else None,
+                user_full_name=review.user.full_name if review.user else None
+            )
+            return APIResponse(
+                success=True,
+                data=review_response,
+                message="评论创建成功"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="评论创建后获取失败"
+            )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Create review failed",
+            error=str(e),
+            agent_id=agent_id,
+            user_id=current_user.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="评论创建失败"
+        )
+
+
+@router.get("/{agent_id}/reviews", response_model=APIResponse[list])
+async def get_agent_reviews(
+    agent_id: int,
+    limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """获取Agent评论列表"""
+    try:
+        # 检查Agent是否存在
+        agent = await agent_service.get(agent_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent不存在"
+            )
+
+        # 检查访问权限
+        if agent.visibility.value == "private" and (
+            not current_user or agent.owner_id != current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权限查看此Agent评论"
+            )
+
+        reviews = await agent_service.get_agent_reviews(agent_id, limit, offset)
+
+        review_responses = [
+            ReviewResponse(
+                id=r.id,
+                rating=r.rating,
+                title=r.title,
+                content=r.content,
+                is_verified_purchase=r.is_verified_purchase,
+                is_featured=r.is_featured,
+                helpful_count=r.helpful_count,
+                agent_id=r.agent_id,
+                user_id=r.user_id,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+                user_username=r.user.username if r.user else None,
+                user_full_name=r.user.full_name if r.user else None
+            ) for r in reviews
+        ]
+
+        return APIResponse(
+            success=True,
+            data=review_responses,
+            message="获取评论列表成功"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Get reviews failed",
+            error=str(e),
+            agent_id=agent_id,
+            user_id=current_user.id if current_user else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取评论列表失败"
+        )
+
+
+@router.post("/{agent_id}/favorite", response_model=APIResponse[dict])
+async def toggle_favorite(
+    agent_id: int,
+    is_favorite: bool = True,
+    current_user: User = Depends(get_current_active_user),
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """切换Agent收藏状态"""
+    try:
+        # 检查Agent是否存在
+        agent = await agent_service.get(agent_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent不存在"
+            )
+
+        # 检查访问权限
+        if agent.visibility.value == "private" and agent.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权限收藏此Agent"
+            )
+
+        success = await agent_service.toggle_favorite(agent_id, current_user.id, is_favorite)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="收藏操作失败"
+            )
+
+        action = "收藏" if is_favorite else "取消收藏"
+        logger.info(
+            f"Agent {action} successfully",
+            agent_id=agent_id,
+            user_id=current_user.id
+        )
+
+        return APIResponse(
+            success=True,
+            data={"is_favorite": is_favorite},
+            message=f"Agent{action}成功"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Toggle favorite failed",
+            error=str(e),
+            agent_id=agent_id,
+            user_id=current_user.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="收藏操作失败"
+        )
+
+
+@router.get("/{agent_id}/analytics", response_model=APIResponse[list])
+async def get_agent_analytics(
+    agent_id: int,
+    period_type: str = Query("monthly", regex="^(daily|weekly|monthly)$"),
+    limit: int = Query(12, ge=1, le=100),
+    current_user: User = Depends(get_current_active_user),
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """获取Agent分析数据"""
+    try:
+        # 检查权限
+        agent = await agent_service.get(agent_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent不存在"
+            )
+
+        if agent.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权限查看此Agent分析数据"
+            )
+
+        analytics_data = await agent_service.get_agent_analytics(agent_id, period_type, limit)
+
+        analytics_responses = [AnalyticsData.model_validate(a) for a in analytics_data]
+
+        return APIResponse(
+            success=True,
+            data=analytics_responses,
+            message="获取分析数据成功"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Get analytics failed",
+            error=str(e),
+            agent_id=agent_id,
+            user_id=current_user.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取分析数据失败"
+        )
+
+
+@router.get("/{agent_id}/traffic", response_model=APIResponse[list])
+async def get_agent_traffic(
+    agent_id: int,
+    days: int = Query(30, ge=1, le=365),
+    current_user: User = Depends(get_current_active_user),
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """获取Agent流量数据"""
+    try:
+        # 检查权限
+        agent = await agent_service.get(agent_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent不存在"
+            )
+
+        if agent.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权限查看此Agent流量数据"
+            )
+
+        traffic_data = await agent_service.get_agent_traffic_data(agent_id, days)
+
+        traffic_responses = [
+            TrafficData(
+                date=t.date.isoformat(),
+                page_views=t.page_views,
+                unique_visitors=t.unique_visitors,
+                bounce_rate=t.bounce_rate
+            ) for t in traffic_data
+        ]
+
+        return APIResponse(
+            success=True,
+            data=traffic_responses,
+            message="获取流量数据成功"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Get traffic failed",
+            error=str(e),
+            agent_id=agent_id,
+            user_id=current_user.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取流量数据失败"
         )

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from prometheus_client import make_asgi_app
+# from prometheus_client import make_asgi_app
 
 from agentpedia.api.v1.api import api_router
 from agentpedia.core.config import get_settings
@@ -171,9 +171,9 @@ def create_app() -> FastAPI:
         }
     
     # 添加指标端点（如果启用）
-    if settings.ENABLE_METRICS:
-        metrics_app = make_asgi_app()
-        app.mount("/metrics", metrics_app)
+    # if settings.ENABLE_METRICS:
+    #     metrics_app = make_asgi_app()
+    #     app.mount("/metrics", metrics_app)
     
     return app
 

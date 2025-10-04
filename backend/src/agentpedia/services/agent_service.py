@@ -30,7 +30,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         print(f"DEBUG: get_by_name_and_owner returned: {existing_agent}")
         if existing_agent:
             raise ValueError("Agent名称已存在")
-        
+
         # 创建Agent
         agent = Agent(
             name=agent_data.name,
@@ -56,7 +56,17 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
             rate_limit_per_hour=agent_data.rate_limit_per_hour,
             rate_limit_per_day=agent_data.rate_limit_per_day,
             status=AgentStatus.ACTIVE,
+            # 扩展字段
+            website_url=agent_data.website_url,
+            one_liner=agent_data.one_liner,
+            detailed_description=agent_data.detailed_description,
         )
+
+        # 设置标签和价格方案
+        if agent_data.tags:
+            agent.set_tags_list(agent_data.tags)
+        if agent_data.pricing_plans:
+            agent.set_pricing_plans(agent_data.pricing_plans)
         
         self.db.add(agent)
         await self.db.commit()
@@ -96,24 +106,30 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         agent = await self.get(agent_id)
         if not agent:
             return None
-        
+
         # 检查权限
         if agent.owner_id != user_id:
             raise PermissionError("无权限修改此Agent")
-        
+
         # 更新字段
         update_data = agent_data.model_dump(exclude_unset=True, exclude={"tools"})
         for field, value in update_data.items():
             setattr(agent, field, value)
-        
+
+        # 特殊处理标签和价格方案
+        if agent_data.tags is not None:
+            agent.set_tags_list(agent_data.tags)
+        if agent_data.pricing_plans is not None:
+            agent.set_pricing_plans(agent_data.pricing_plans)
+
         agent.updated_at = datetime.utcnow()
         await self.db.commit()
         await self.db.refresh(agent)
-        
+
         # 更新工具关联
         if agent_data.tools is not None:
             await self.update_agent_tools(agent_id, agent_data.tools)
-        
+
         return agent
     
     async def delete_agent(self, agent_id: int, user_id: int) -> bool:
@@ -380,11 +396,11 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         agent = await self.get_with_tools(agent_id)
         if not agent:
             return None
-        
+
         # 检查权限
         if agent.owner_id != user_id:
             raise PermissionError("无权限导出此Agent")
-        
+
         return {
             "name": agent.name,
             "description": agent.description,
@@ -409,6 +425,145 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 "per_hour": agent.rate_limit_per_hour,
                 "per_day": agent.rate_limit_per_day,
             },
+            # 扩展字段
+            "website_url": agent.website_url,
+            "one_liner": agent.one_liner,
+            "tags": agent.get_tags_list(),
+            "detailed_description": agent.detailed_description,
+            "pricing_plans": agent.get_pricing_plans(),
             "exported_at": datetime.utcnow().isoformat(),
             "version": "1.0",
         }
+
+    async def get_agent_with_reviews(self, agent_id: int) -> Optional[Agent]:
+        """获取Agent基本信息"""
+        stmt = (
+            select(Agent)
+            .options(selectinload(Agent.owner))
+            .where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None)
+            )
+        )
+        result = self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_agent_analytics(
+        self,
+        agent_id: int,
+        period_type: str = "monthly",
+        limit: int = 12
+    ) -> List:
+        """获取Agent分析数据"""
+        from agentpedia.models.review import AgentAnalytics
+
+        stmt = (
+            select(AgentAnalytics)
+            .where(
+                AgentAnalytics.agent_id == agent_id,
+                AgentAnalytics.period_type == period_type
+            )
+            .order_by(AgentAnalytics.date.desc())
+            .limit(limit)
+        )
+        result = self.db.execute(stmt)
+        return list(result.scalars())
+
+    async def get_agent_traffic_data(self, agent_id: int, days: int = 30) -> List:
+        """获取Agent流量数据"""
+        from agentpedia.models.review import AgentAnalytics
+        from datetime import timedelta
+
+        start_date = datetime.utcnow() - timedelta(days=days)
+
+        stmt = (
+            select(AgentAnalytics)
+            .where(
+                AgentAnalytics.agent_id == agent_id,
+                AgentAnalytics.date >= start_date,
+                AgentAnalytics.period_type == "daily"
+            )
+            .order_by(AgentAnalytics.date.asc())
+        )
+        result = self.db.execute(stmt)
+        return list(result.scalars())
+
+    async def get_agent_reviews(
+        self,
+        agent_id: int,
+        limit: int = 10,
+        offset: int = 0
+    ) -> List:
+        """获取Agent评论列表"""
+        from agentpedia.models.review import AgentReview
+        from agentpedia.models.user import User
+
+        stmt = (
+            select(AgentReview)
+            .options(selectinload(AgentReview.user))
+            .where(
+                AgentReview.agent_id == agent_id,
+                AgentReview.deleted_at.is_(None)
+            )
+            .order_by(AgentReview.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = self.db.execute(stmt)
+        return list(result.scalars())
+
+    async def add_review(
+        self,
+        agent_id: int,
+        user_id: int,
+        rating: float,
+        title: Optional[str] = None,
+        content: Optional[str] = None
+    ) -> bool:
+        """添加Agent评论"""
+        from agentpedia.models.review import AgentReview
+
+        # 检查是否已经评论过
+        existing_review = await self.db.execute(
+            select(AgentReview).where(
+                AgentReview.agent_id == agent_id,
+                AgentReview.user_id == user_id,
+                AgentReview.deleted_at.is_(None)
+            )
+        )
+        if existing_review.scalar_one_or_none():
+            raise ValueError("您已经评论过此Agent")
+
+        # 创建评论
+        review = AgentReview(
+            agent_id=agent_id,
+            user_id=user_id,
+            rating=rating,
+            title=title,
+            content=content
+        )
+
+        self.db.add(review)
+
+        # 更新Agent评分
+        agent = await self.get(agent_id)
+        if agent:
+            agent.update_rating(rating)
+            agent.increment_reviews()
+
+        await self.db.commit()
+        return True
+
+    async def toggle_favorite(self, agent_id: int, user_id: int, is_favorite: bool) -> bool:
+        """切换收藏状态（这里简化处理，实际可能需要单独的收藏表）"""
+        agent = await self.get(agent_id)
+        if not agent:
+            return False
+
+        if is_favorite:
+            agent.increment_favorites()
+        else:
+            agent.decrement_favorites()
+
+        await self.db.commit()
+        return True
